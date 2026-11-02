@@ -28,6 +28,14 @@ done
 [ -f robodojo/Assets/Robots/litearm/litearm.usd ] \
     || die "LiteArm assets missing; run scripts/fetch_assets.sh first"
 
+sim_env="${ROBODOJO_EVAL_ENV:-RoboDojo}"
+if command -v conda >/dev/null 2>&1; then
+    eval "$(conda shell.bash hook)"
+    conda activate "${sim_env}" || die "cannot activate conda environment ${sim_env}"
+else
+    warn "conda not found; run this script in the ${sim_env} environment"
+fi
+
 info "connecting to ${host}:${port} (task=${task}, seed=${seed})"
 exec bash robodojo/scripts/robodojo.sh client \
     --policy-dir robodojo/XPolicyLab/policy/PyRUA_Lean \
@@ -35,7 +43,6 @@ exec bash robodojo/scripts/robodojo.sh client \
     --policy-port "${port}" \
     --task "${task}" \
     --ckpt no-checkpoint \
-    --policy-env "${ROBODOJO_EVAL_ENV:-RoboDojo}" \
     --env-cfg litearm \
     --action-type joint \
     --seed "${seed}" \
