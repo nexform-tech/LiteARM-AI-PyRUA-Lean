@@ -88,7 +88,7 @@ operator.
 
 - This repository owns the LiteArm assets, adapter, environment configuration, evaluation scripts and the modified upstream snapshots. It does not own IsaacLab or cuRobo; both are cloned at pinned revisions.
 - The RoboDojo asset dataset and the SAM3 checkpoint are downloaded, not stored here.
-- The reference result is `stack_blocks` seed 0. `cover_blocks` was recorded but is not part of the verified result; other tasks are unverified on LiteArm.
+- The reference results are `stack_blocks` and `align_blocks` at seed 0. `cover_blocks` was recorded but is not part of the verified results; other tasks are unverified on LiteArm.
 - The simulator uses 640x480 colour cameras without depth. The reference 8 GB GPU runs the simulator only with reduced cameras; SAM3 needs a separate GPU.
 - The LiteGrip opens to 8.7 cm, which excludes grasps on the 12 cm bowls.
 

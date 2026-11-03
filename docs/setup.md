@@ -149,6 +149,7 @@ bash robodojo/scripts/robodojo.sh eval \
 
 The commands in this guide encode the manual steps used on the reference machine
 (Ubuntu 22.04, RTX 4060 8 GB simulator, Jetson AGX Thor policy server). The
-`stack_blocks` result and the video recordings were produced there. A fresh-host
-run of `scripts/setup.sh` and `scripts/fetch_assets.sh` has not been verified;
-report differences with the output of `doctor` and the failing command.
+`stack_blocks` and `align_blocks` results and the video recordings were produced
+there. A fresh-host run of `scripts/setup.sh` and `scripts/fetch_assets.sh` has
+not been verified; report differences with the output of `doctor` and the
+failing command.

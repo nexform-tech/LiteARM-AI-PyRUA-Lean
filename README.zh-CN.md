@@ -21,8 +21,15 @@ LiteArm 机器人资产、环境配置、评测脚本，以及官方 `stack_bloc
 
 完整视频：[cover_blocks.mp4](docs/assets/videos/cover_blocks.mp4)
 
-`stack_blocks` seed 0 在参考机器上完成，success rate 1.0、score 100、1379 步。仿真器运行于 Ubuntu
-22.04 + RTX 4060 8 GB；策略服务器运行于 Jetson AGX Thor 128 GB。以上录制来自这些运行。
+`align_blocks`，seed 0：
+
+![align_blocks demo](docs/assets/videos/align_blocks.gif)
+
+完整视频：[align_blocks.mp4](docs/assets/videos/align_blocks.mp4)
+
+`stack_blocks` seed 0 在参考机器上完成，success rate 1.0、score 100、1379 步。2026-11-03 的
+`align_blocks` seed 0 运行同样返回 success rate 1.0、score 100。仿真器运行于 Ubuntu 22.04 +
+RTX 4060 8 GB；策略服务器运行于 Jetson AGX Thor 128 GB。以上录制来自参考机器的运行。
 
 ## 仓库内容
 

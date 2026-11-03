@@ -25,10 +25,17 @@ Full video: [stack_blocks.mp4](docs/assets/videos/stack_blocks.mp4)
 
 Full video: [cover_blocks.mp4](docs/assets/videos/cover_blocks.mp4)
 
+`align_blocks`, seed 0:
+
+![align_blocks demo](docs/assets/videos/align_blocks.gif)
+
+Full video: [align_blocks.mp4](docs/assets/videos/align_blocks.mp4)
+
 The `stack_blocks` seed-0 evaluation completed with success rate 1.0 and score
-100 after 1379 steps. The simulator ran on Ubuntu 22.04 with an RTX 4060 8 GB;
-the policy server ran on a Jetson AGX Thor 128 GB. The recordings above are from
-those runs.
+100 after 1379 steps. The `align_blocks` seed-0 run on 2026-11-03 also returned
+success rate 1.0 and score 100. The simulator ran on Ubuntu 22.04 with an RTX
+4060 8 GB; the policy server ran on a Jetson AGX Thor 128 GB. The recordings are
+from reference-machine runs.
 
 ## What is included
 

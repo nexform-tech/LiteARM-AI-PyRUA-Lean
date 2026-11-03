@@ -75,6 +75,7 @@ RoboDojo environment and the LiteArm assets; it does not need the API key.
 | Task | Status |
 | --- | --- |
 | `stack_blocks` | Verified, seed 0: success rate 1.0, score 100, 1379 steps |
+| `align_blocks` | Verified, seed 0: success rate 1.0, score 100 (2026-11-03) |
 | `cover_blocks` | Demonstrated in the recording; not part of the verified result |
 | Other RoboDojo tasks | Runnable with `--env-cfg litearm`, but not verified on LiteArm |
 
