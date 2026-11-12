@@ -1,0 +1,324 @@
+{
+  "schema_version": 1,
+  "station_id": "litearm-single-right-safety-test",
+  "calibration_version": "single-right-tcp-table-plane-20261110-fingertip-46mm-wristhandeye-20261111",
+  "executable": true,
+  "source": "Derived from single-right-safety-test calibration; table z=0.125 m per operator on 2026-11-10; TCP-only tool/table check; physical finger contact unverified. | TCP +x shift 0.046000 m (unverified candidate) | 2026-11-10: table z measured by head RGB-D (30-frame median, RANSAC plane, inlier RMS 2 mm): grasp area (x~-0.06,y~0.48) 0.1165 m; plane tilt ~5 deg; table center ~0.130 m. Scalar configured at the grasp-area local height. | 2026-11-11: wrist camera extrinsic replaced by measured eye-in-hand PARK calibration (median 7.0 mm / 1.56 deg), converted from OpenCV optical to the station camera frame with diag(1,-1,-1); intrinsics unchanged.",
+  "created_at": "2026-11-09T16:08:17+08:00",
+  "quality": {
+    "status": "operator-table-plane-profile",
+    "notes": "Tool/table and hard-floor checks use TCP only. Body/finger table clearance is not modelled in this profile. Joint limits, arm-link/table, self/other-arm checks remain. Base, TCP and camera extrinsics retained from the source calibration.",
+    "tcp_retarget": "unverified candidate",
+    "operator_authorization": "2026-11-10: operator approved live use of the CAD-derived fingertip TCP (flange-to-TCP 176.6 mm, unverified against the physical finger) together with the head-camera measured table 0.1165 m.",
+    "wrist_camera_handeye": "2026-11-11: measured eye-in-hand calibration (PARK, 15/16 samples, median 7.0 mm / 1.56 deg, source tools/handeye_eye_in_hand_PARK_20261111_105233.json); cam_right_wrist.camera_to_tool = inv(flange_to_tcp) @ T_flange_cam @ diag(1,-1,-1,1). The diag factor maps the HandEye Studio OpenCV optical frame (+z forward, +y down) to the station camera convention (looking down -z, +y up, as in perception._project); omitting it rolls the wrist camera 180 deg and mirrors every wrist world observation. With the conversion the measured extrinsic agrees with the previous derived one to 2.0 deg / 18 mm. 640x480 intrinsics retained (RealSense profile, consistent with the 1280x720 calibration FOV scaling)."
+  },
+  "world": {
+    "origin": "LiteArm base frame; no external world origin measured",
+    "axes": "+x right, +y forward, +z up in the arm base frame",
+    "units": "m, rad"
+  },
+  "arms": {
+    "right": {
+      "base_pose": [
+        [
+          1.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          1.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "flange_to_tcp": [
+        [
+          6.123233995736766e-17,
+          1.0,
+          -6.123233995736766e-17,
+          2.8166876380389123e-18
+        ],
+        [
+          0.0,
+          6.123233995736766e-17,
+          1.0,
+          0.0
+        ],
+        [
+          1.0,
+          -6.123233995736766e-17,
+          3.749399456654644e-33,
+          0.17659999999999998
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "joint_map": [
+        {
+          "model_joint": 0,
+          "sdk_index": 0,
+          "sign": 1.0,
+          "offset_rad": 0.0
+        },
+        {
+          "model_joint": 1,
+          "sdk_index": 1,
+          "sign": 1.0,
+          "offset_rad": 0.0
+        },
+        {
+          "model_joint": 2,
+          "sdk_index": 2,
+          "sign": 1.0,
+          "offset_rad": 0.0
+        },
+        {
+          "model_joint": 3,
+          "sdk_index": 3,
+          "sign": 1.0,
+          "offset_rad": 0.0
+        },
+        {
+          "model_joint": 4,
+          "sdk_index": 4,
+          "sign": 1.0,
+          "offset_rad": 0.0
+        },
+        {
+          "model_joint": 5,
+          "sdk_index": 5,
+          "sign": 1.0,
+          "offset_rad": 0.0
+        },
+        {
+          "model_joint": 6,
+          "sdk_index": 6,
+          "sign": 1.0,
+          "offset_rad": 0.0
+        }
+      ],
+      "joint_limits_rad": [
+        [
+          -2.809546947479248,
+          2.809546947479248
+        ],
+        [
+          -1.7275470495224,
+          1.7275470495224
+        ],
+        [
+          -2.809546947479248,
+          2.809546947479248
+        ],
+        [
+          -3.071547031402588,
+          0.01754700019955635
+        ],
+        [
+          -2.809546947479248,
+          2.809546947479248
+        ],
+        [
+          -1.5535470247268677,
+          1.5535470247268677
+        ],
+        [
+          -1.5535470247268677,
+          1.5535470247268677
+        ]
+      ],
+      "safe_home_rad": [
+        0.24294090270996094,
+        0.7280559539794922,
+        -0.3606853485107422,
+        -0.7532234191894531,
+        -1.200312614440918,
+        -1.550889015197754,
+        1.436446189880371
+      ],
+      "gripper": {
+        "closed_m": 0.001508,
+        "open_m": 0.08696,
+        "force_n": 15.0,
+        "min_holding_m": 0.003,
+        "max_closing_speed_m_s": 0.05
+      },
+      "tool_collision": {
+        "body_length_m": 0.17659999999999998,
+        "body_radius_m": 0.035,
+        "tip_offset_m": 0.0,
+        "finger_half_width_m": 0.003,
+        "finger_half_thickness_m": 0.0305,
+        "table_check_mode": "tcp_plane",
+        "table_margin_m": 0.003,
+        "body_end_offset_m": -0.046
+      },
+      "link_radii_m": [
+        0.045,
+        0.05,
+        0.045,
+        0.04,
+        0.04,
+        0.035,
+        0.03
+      ],
+      "tcp_reference": "fingertip_midpoint",
+      "tcp_retarget": {
+        "old_tcp_to_new_tcp_m": [
+          0.046,
+          0.0,
+          0.0
+        ],
+        "measurement_status": "candidate_unverified"
+      }
+    }
+  },
+  "cameras": {
+    "cam_head": {
+      "mount": "world",
+      "camera_to_world": [
+        [
+          -0.9947769755061309,
+          0.05037002068350502,
+          -0.08877854481358552,
+          -0.008222591478850131
+        ],
+        [
+          -0.0865319399085829,
+          -0.8774741193054685,
+          0.4717535302726945,
+          0.8090050287388582
+        ],
+        [
+          -0.05413864034616989,
+          0.4769717297339917,
+          0.8772496660905789,
+          0.9513842313271446
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "intrinsic_matrix": [
+        [
+          607.0194091796875,
+          0.0,
+          323.3750915527344
+        ],
+        [
+          0.0,
+          606.4129638671875,
+          255.79656982421875
+        ],
+        [
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "distortion_coefficients": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "resolution": [
+        480,
+        640
+      ],
+      "has_depth": true
+    },
+    "cam_right_wrist": {
+      "mount": "tool",
+      "arm": "right",
+      "camera_to_tool": [
+        [
+          -0.013393614553630952,
+          -0.7843635389461492,
+          -0.6201567945778402,
+          -0.06990645452107715
+        ],
+        [
+          0.014342478256705269,
+          0.6199979196333233,
+          -0.7844723532208178,
+          -0.11700328130128038
+        ],
+        [
+          0.9998074336624254,
+          -0.019401505669000157,
+          0.0029457038430657427,
+          -0.021148255330906314
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "intrinsic_matrix": [
+        [
+          606.9144287109375,
+          0.0,
+          325.23602294921875
+        ],
+        [
+          0.0,
+          606.716796875,
+          246.98541259765625
+        ],
+        [
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "distortion_coefficients": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "resolution": [
+        480,
+        640
+      ],
+      "has_depth": false
+    }
+  },
+  "table": {
+    "z_m": 0.1165,
+    "x_min_m": -0.365,
+    "x_max_m": 0.235,
+    "y_min_m": 0.43,
+    "y_max_m": 0.85,
+    "edge_margin_m": 0.02,
+    "z_floor_m": 0.1165
+  },
+  "obstacles": [],
+  "version": "single-right-measured-fingertip-20261110"
+}
