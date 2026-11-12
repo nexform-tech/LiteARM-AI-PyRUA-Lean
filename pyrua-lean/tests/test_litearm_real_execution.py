@@ -267,7 +267,14 @@ def test_cancel_stops_between_segments_and_refuses_more_motion(tmp_path):
                 "digest": command_digest("trajectory", payload),
             },
         )
-        time.sleep(0.15)
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            status = client.request("command_status", {"command_id": command_id})
+            if status["state"] == "running":
+                break
+            time.sleep(0.01)
+        else:
+            pytest.fail("trajectory command did not start")
         reply = client.send_cancel()
         assert reply["accepted"] is True
         final = client.request(
@@ -289,6 +296,44 @@ def test_cancel_stops_between_segments_and_refuses_more_motion(tmp_path):
                     "digest": command_digest("grip", {"arm": "left", "command": "open"}),
                 },
             )
+    finally:
+        _stop(daemon, client)
+
+
+def test_cancel_before_the_worker_starts_is_not_lost(tmp_path):
+    config = _config(tmp_path, time_scale=0.03)
+    daemon, client = _start(config)
+    try:
+        toolkit = _toolkit(config, client, tmp_path)
+        observation = toolkit.current_observation(refresh=True)
+        home = list(observation.arm("left").q_model)
+        waypoints = []
+        for i in range(80):
+            q = list(home)
+            q[0] += 0.01 if i % 2 == 0 else 0.0
+            waypoints.append(q)
+        payload = _trajectory_payload(config, toolkit, waypoints, timeout_s=10.0)
+        from pyrualean.hardware.protocol import command_digest
+
+        command_id = "cancel-queued-1"
+        client.request(
+            "command",
+            {
+                "command_id": command_id,
+                "kind": "trajectory",
+                "payload": payload,
+                "digest": command_digest("trajectory", payload),
+            },
+        )
+        # Cancel immediately, without waiting for the executor to pick the
+        # command up. The queued command must still be cancelled.
+        reply = client.send_cancel()
+        assert reply["accepted"] is True
+        final = client.request(
+            "wait_command", {"command_id": command_id, "timeout_s": 5.0}, timeout=7.0
+        )
+        assert final["state"] == "cancelled"
+        assert final["stop"]["confirmed"] is True
     finally:
         _stop(daemon, client)
 

@@ -755,6 +755,15 @@ class HardwareDaemon:
             if command is not None and not command.done.is_set():
                 command.cancel.set()
                 return {"accepted": True, "command_id": command.command_id, "state": command.state}
+            queued = [item for item in self._queue if not item.done.is_set()]
+            if queued:
+                for item in queued:
+                    item.cancel.set()
+                return {
+                    "accepted": True,
+                    "command_id": queued[0].command_id,
+                    "state": queued[0].state,
+                }
             if self.state is SessionState.READY:
                 stop = self._apply_stop(StopKind.CANCEL)
                 return {
@@ -964,6 +973,10 @@ class HardwareDaemon:
     def _run_command(self, command: _Command) -> None:
         started = time.monotonic()
         try:
+            if command.cancel.is_set():
+                raise DeviceCancelled(
+                    "cancel requested before the command started", device="service"
+                )
             problems = self.station.verify_ready()
             if problems:
                 self._enter_fault("station not ready before command: " + "; ".join(problems))
