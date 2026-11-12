@@ -33,11 +33,18 @@ Full video: [cover_blocks.mp4](docs/assets/videos/cover_blocks.mp4)
 
 Full video: [align_blocks.mp4](docs/assets/videos/align_blocks.mp4)
 
+Real hardware demo, LiteArm / LiteGrip station:
+
+![LiteArm real hardware demo](docs/assets/videos/litearm-pyrualean.gif)
+
+Full video: [litearm-pyrualean.mp4](docs/assets/videos/litearm-pyrualean.mp4)
+
 The `stack_blocks` seed-0 evaluation completed with success rate 1.0 and score
 100 after 1379 steps. The `align_blocks` seed-0 run on 2026-11-03 also returned
 success rate 1.0 and score 100. The simulator ran on Ubuntu 22.04 with an RTX
-4060 8 GB; the policy server ran on a Jetson AGX Thor 128 GB. The recordings are
-from reference-machine runs.
+4060 8 GB; the policy server ran on a Jetson AGX Thor 128 GB. The simulator
+recordings are from reference-machine runs; the real-hardware recording is from
+the LiteArm / LiteGrip station.
 
 ## What is included
 
@@ -109,9 +116,9 @@ simulator host downloads the RoboDojo dataset and installs the LiteArm asset;
 ## Real hardware
 
 `pyrua-lean/src/pyrualean/hardware/` runs a calibrated LiteArm / LiteGrip
-station directly: a device-side service owns the arms, grippers and cameras,
-and an agent-side adapter exposes the same `robo` API. It does not import or
-start RoboDojo and does not need Isaac Sim.
+station directly: a device-side service owns the arms, grippers and cameras, and
+an agent-side adapter exposes the same `robo` API. It does not import or start
+RoboDojo and does not need Isaac Sim.
 
 ```bash
 # Device host: the service owns the hardware; read-only is the default mode.
@@ -128,9 +135,9 @@ LITEARM_HW_INSTRUCTION='stack the blocks' \
 
 Copy `pyrua-lean/configs/litearm_real.example.json` and
 `pyrua-lean/configs/calibration/litearm_real.example.json` to local, git-ignored
-files and measure the station before setting `execution.mode=live`. See
-[LiteArm Real](pyrua-lean/docs/robots/litearm-real.md) for the station format,
-SDK versions, service protocol and safety rules. The hardware path has no
+files and measure the station before setting `execution.mode=live`. See [LiteArm
+Real](pyrua-lean/docs/robots/litearm-real.md) for the station format, SDK
+versions, service protocol and safety rules. The hardware path has no
 task-success evaluator and deliberately writes no RoboDojo results.
 
 ## Documentation
