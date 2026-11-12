@@ -56,6 +56,9 @@ hardware-device = [
     "pillow==13.0.0",
     "opencv-python-headless==4.11.0.86",
     "pyserial>=3.4",
+    # Intel D435/D435i Python wrapper; the wheel bundles librealsense.
+    # The realsense-viewer is not a runtime dependency.
+    "pyrealsense2==2.56.5.9235",
 ]
 dev = [
     "build>=1.2",

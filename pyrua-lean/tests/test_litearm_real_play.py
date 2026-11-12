@@ -9,6 +9,7 @@ from pathlib import Path
 
 from pyrualean.hardware.config import load_station
 from pyrualean.hardware.daemon import HardwareDaemon
+from pyrualean.hardware.kinematics import LitearmKinematics
 from pyrualean.play import play_episode
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -68,6 +69,14 @@ def test_play_records_stop_after_shutdown_and_no_task_success(tmp_path, monkeypa
         should_stop=None,
         **kwargs,
     ):
+        card = json.loads((out / "card/card.json").read_text())
+        assert card["facts"]["table surface z"] == (
+            f"{config.calibration.table.z_m:.4f} m in the calibration world frame"
+        )
+        recorded = json.loads((out / "steps/000001/device.json").read_text())
+        xyz = LitearmKinematics(config.calibration).fk("left", recorded["left"]["q_model"])[:3, 3]
+        expected_xyz = f"[{xyz[0]:.4f}, {xyz[1]:.4f}, {xyz[2]:.4f}] m"
+        assert card["facts"]["left measured TCP [x, y, z]"] == expected_xyz
         first = toolkit.execute_tool(
             "python", {"code": "print('measured', robo.state().left.width_m)"}
         )

@@ -9,6 +9,7 @@ joint-level environment whose observation is ``litearm_kinematics.fk``.
 from __future__ import annotations
 
 import math
+import os
 from pathlib import Path
 import sys
 import xml.etree.ElementTree as ET
@@ -26,7 +27,8 @@ from pyrualean.hosts import litearm_tools as tools  # noqa: E402
 from pyrualean.litearm import Gripper, LitearmRobot, State  # noqa: E402
 from pyrualean.prompt import _public_members, api_reference, knowledge_text  # noqa: E402
 
-URDF = Path("/home/hzh/Code/PyRUA/RoboDojo/Assets/Robots/litearm/litearm.urdf")
+_REPO = Path(__file__).resolve().parents[2]
+URDF = Path(os.environ.get("LITEARM_URDF", _REPO / "assets" / "litearm" / "litearm.urdf"))
 
 
 # ---------------------------------------------------------------------------

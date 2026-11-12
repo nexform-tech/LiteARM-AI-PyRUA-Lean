@@ -290,6 +290,11 @@ class GripperDeviceConfig:
     hold_clearance_mm: float
     open_speed_mm_s: float
     close_speed_mm_s: float
+    #: Explicit opt-in for a live station: enable the calibrated gripper when
+    #: the service opens it.  False by default, matching the arm's "never
+    #: enable automatically" rule; set only after the operator has authorized
+    #: enabling the gripper for this station.
+    enable_on_open: bool = False
 
 
 @dataclass(frozen=True)
@@ -507,6 +512,9 @@ class ToolCollision:
     tip_offset_m: float
     finger_half_width_m: float
     finger_half_thickness_m: float
+    table_check_mode: str = "geometry"
+    table_margin_m: float = 0.002
+    body_end_offset_m: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -550,6 +558,7 @@ class CameraCalibration:
     distortion: tuple[float, ...]
     resolution: tuple[int, int]
     has_depth: bool
+    camera_frame: str = "opengl"
 
     @property
     def width(self) -> int:
@@ -563,6 +572,12 @@ class CameraCalibration:
 @dataclass(frozen=True)
 class TableCalibration:
     z_m: float
+    #: Hard lower bound for the **lowest fingertip point** in the station world
+    #: frame.  It may be below ``z_m`` by a bounded penetration allowance (this
+    #: station sets table - 2 cm); motions whose finger points fall below it are
+    #: refused by the collision model and by the device layer.  A floor more
+    #: than 5 cm below the table is rejected as an implausible calibration.
+    z_floor_m: float
     x_min_m: float
     x_max_m: float
     y_min_m: float
@@ -750,6 +765,14 @@ def load_calibration(
         collision_raw = _obj(
             item.get("tool_collision", {}), f"calibration.arms.{arm}.tool_collision"
         )
+        table_check_mode = _str(
+            collision_raw.get("table_check_mode", "geometry"),
+            f"arms.{arm}.tool_collision.table_check_mode",
+        )
+        if table_check_mode not in ("geometry", "tcp_plane"):
+            raise ConfigError(
+                f"arms.{arm}.tool_collision.table_check_mode must be geometry or tcp_plane"
+            )
         tool = ToolCollision(
             body_length_m=_num(
                 collision_raw.get("body_length_m", 0.13),
@@ -780,6 +803,19 @@ def load_calibration(
                 f"arms.{arm}.tool_collision.finger_half_thickness_m",
                 low=0.0,
                 high=0.1,
+            ),
+            table_check_mode=table_check_mode,
+            table_margin_m=_num(
+                collision_raw.get("table_margin_m", 0.002),
+                f"arms.{arm}.tool_collision.table_margin_m",
+                low=0.0,
+                high=0.05,
+            ),
+            body_end_offset_m=_num(
+                collision_raw.get("body_end_offset_m", 0.0),
+                f"arms.{arm}.tool_collision.body_end_offset_m",
+                low=-0.5,
+                high=0.5,
             ),
         )
         radii_raw = item.get("link_radii_m", [0.045] * 7)
@@ -841,11 +877,20 @@ def load_calibration(
             raise ConfigError(
                 f"calibration.cameras.{name}.distortion_coefficients must be a 4/5/8/12/14 list"
             )
+        from .camera_geometry import station_transform
+
+        camera_frame = item.get("camera_frame", "opengl")
+        try:
+            camera_transform = station_transform(
+                _transform(item.get(transform_key), f"cameras.{name}.{transform_key}"), camera_frame
+            )
+        except ValueError as exc:
+            raise ConfigError(f"calibration.cameras.{name}: {exc}") from exc
         parsed_cameras[name] = CameraCalibration(
             name=name,
             arm=arm,
             mount=mount,
-            transform=_transform(item.get(transform_key), f"cameras.{name}.{transform_key}"),
+            transform=camera_transform,
             intrinsic=intrinsic,
             distortion=tuple(
                 _num(v, f"cameras.{name}.distortion_coefficients[{i}]")
@@ -856,8 +901,10 @@ def load_calibration(
         )
 
     table_raw = _obj(raw.get("table"), "calibration.table")
+    table_z = _num(table_raw.get("z_m"), "table.z_m")
     table = TableCalibration(
-        z_m=_num(table_raw.get("z_m"), "table.z_m"),
+        z_m=table_z,
+        z_floor_m=_num(table_raw.get("z_floor_m", table_z), "table.z_floor_m"),
         x_min_m=_num(table_raw.get("x_min_m"), "table.x_min_m"),
         x_max_m=_num(table_raw.get("x_max_m"), "table.x_max_m"),
         y_min_m=_num(table_raw.get("y_min_m"), "table.y_min_m"),
@@ -866,6 +913,11 @@ def load_calibration(
     )
     if not table.x_min_m < table.x_max_m or not table.y_min_m < table.y_max_m:
         raise ConfigError("table bounds must have min < max on both axes")
+    if table.z_floor_m < table.z_m - 0.05:
+        raise ConfigError(
+            "table.z_floor_m is more than 5 cm below table.z_m; "
+            "the penetration allowance is implausibly large"
+        )
     obstacles_raw = raw.get("obstacles", [])
     if not isinstance(obstacles_raw, list):
         raise ConfigError("calibration.obstacles must be a list")
@@ -949,6 +1001,7 @@ def _gripper_device(value: Any, name: str, base: Path) -> GripperDeviceConfig | 
         close_speed_mm_s=_num(
             grip_raw.get("close_speed_mm_s", 40.0), f"{name}.close_speed_mm_s", low=1.0, high=80.0
         ),
+        enable_on_open=_bool(grip_raw.get("enable_on_open", False), f"{name}.enable_on_open"),
     )
 
 

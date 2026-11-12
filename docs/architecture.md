@@ -96,12 +96,8 @@ operator.
 `pyrua-lean/src/pyrualean/hardware/` runs the same station without RoboDojo or
 Isaac Sim. Two processes replace the simulator link:
 
-1. `pyrualean.hardware.daemon` (device host) owns the arms, LiteGrips and
-   cameras, validates every trajectory, executes synchronous joint segments and
-   captures the measured state. It listens on newline-delimited JSON over TCP,
-   localhost by default.
-2. `pyrualean.litearm_real.LitearmRealRobot` (agent host) exposes the `robo`
-   API; `pyrualean.hardware.toolkit` plans, perceives and records evidence.
+1. `pyrualean.hardware.daemon` (device host) owns the arms, LiteGrips and cameras, validates every trajectory, executes synchronous joint segments and captures the measured state. It listens on newline-delimited JSON over TCP, localhost by default.
+2. `pyrualean.litearm_real.LitearmRealRobot` (agent host) exposes the `robo` API; `pyrualean.hardware.toolkit` plans, perceives and records evidence.
 
 The path shares the LiteArm knowledge and dimension conventions with the
 simulator, but not a process, an environment or a result format. It has no

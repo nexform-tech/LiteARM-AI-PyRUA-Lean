@@ -29,13 +29,15 @@ from pathlib import Path
 from typing import Any
 
 from .config import StationConfig
+from .cube_stack import stack_cube as motion_stack_cube
+from .grasp import grasp_cube as motion_grasp_cube
 from .kinematics import LitearmKinematics
 from .motion import grip as motion_grip
 from .motion import home as motion_home
 from .motion import move_pose as motion_move_pose
 from .motion import place_on as motion_place_on
 from .perception import FrameData, Perception, frame_from_observation
-from .planning import Planner
+from .planning import Planner, PlanningError
 from .recording import Recorder
 from .rpc import HardwareClient, RpcError
 from .state import Observation, build_observation
@@ -146,6 +148,12 @@ class HardwareToolkit:
 
     # -- tool dispatch ------------------------------------------------------
 
+    def sync_target_holds(self, observation: Observation, *, allow_bind: bool = True) -> None:
+        if self.perception is not None:
+            self.perception.tracker.sync_holds(
+                observation, self.held_openings, allow_bind=allow_bind
+            )
+
     def execute_tool(self, name: str, input_dict: dict[str, Any]) -> dict[str, Any]:
         kwargs = dict(input_dict or {})
         try:
@@ -159,6 +167,8 @@ class HardwareToolkit:
                 return self._segment(kwargs)
             if name == "back_project":
                 return self._back_project(kwargs)
+            if name == "check_move":
+                return self._check_move(kwargs)
             if name == "move_pose":
                 result = motion_move_pose(
                     self,
@@ -179,6 +189,10 @@ class HardwareToolkit:
                 )
             elif name == "home":
                 result = motion_home(self, arm=str(kwargs.get("arm", "both")))
+            elif name == "grasp_cube":
+                result = motion_grasp_cube(self, **kwargs)
+            elif name == "stack_cube":
+                result = motion_stack_cube(self, **kwargs)
             elif name == "place_on":
                 result = motion_place_on(
                     self,
@@ -196,6 +210,7 @@ class HardwareToolkit:
             else:
                 return {"error": f"this hardware host has no tool {name!r}"}
             observation = self.refresh_observation(tool=name)
+            self.sync_target_holds(observation)
             return self._envelope(observation, name, result)
         except RpcError as exc:
             return {"error": f"{exc.code}: {exc.message}", "detail": exc.detail}
@@ -236,24 +251,31 @@ class HardwareToolkit:
         if self.perception is None:
             return {"error": "SAM3 perception is not configured (host booted env_only)"}
         observation = self.current_observation(refresh=True)
+        self.sync_target_holds(observation)
         frames = self.frames(observation)
         return self.perception.segment(
             frames,
             str(kwargs.get("text_prompt", "")),
             str(kwargs.get("camera", "cam_head")),
             min_score=kwargs.get("min_score"),
+            track=True,
         )
 
     def _locate(self, kwargs: dict[str, Any]) -> dict[str, Any]:
         if self.perception is None:
             return {"error": "SAM3 perception is not configured (host booted env_only)"}
         observation = self.current_observation(refresh=True)
+        self.sync_target_holds(observation)
         frames = self.frames(observation)
         return self.perception.locate(
             frames,
             str(kwargs.get("text_prompt", "")),
             str(kwargs.get("camera", "cam_head")),
             min_score=kwargs.get("min_score"),
+            track=True,
+            geometry_mode=str(kwargs.get("geometry_mode", "supported")),
+            support_z_m=kwargs.get("support_z_m"),
+            object_height_m=kwargs.get("object_height_m"),
         )
 
     def _back_project(self, kwargs: dict[str, Any]) -> dict[str, Any]:
@@ -269,6 +291,48 @@ class HardwareToolkit:
         )
 
     # -- command submission ------------------------------------------------
+
+    def _check_move(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        """Run the full planner without issuing a motion or gripper command."""
+        observation = self.current_observation(refresh=True)
+        arm = str(kwargs.get("arm", "right"))
+        if arm not in observation.arms:
+            raise ValueError(f"arm {arm!r} is not active")
+        q = observation.arm(arm).q_model
+        other = next((name for name in observation.arms if name != arm), None)
+        out = {"feasible": False, "step": observation.step, "device_actions": 0}
+        try:
+            plan = self.planner.plan_move(
+                arm,
+                q,
+                kwargs["xyz"],
+                pitch=kwargs.get("pitch"),
+                yaw=kwargs.get("yaw"),
+                roll=kwargs.get("roll"),
+                path=str(kwargs.get("path", "auto")),
+                holding=arm in self.held_openings,
+                half_turn=arm not in self.held_openings,
+                other_arm=other,
+                other_q=observation.arm(other).q_model if other else None,
+            )
+        except PlanningError as exc:
+            out.update({"error": str(exc), "detail": exc.detail})
+            return out
+        pose = self.kinematics.fk(arm, plan.waypoints[-1])
+        out.update(
+            {
+                "feasible": True,
+                "path": plan.path,
+                "waypoint_count": len(plan.waypoints),
+                "duration_s": plan.estimated_duration_s,
+                "planned_xyz": pose[:3, 3].tolist(),
+                "note": plan.note,
+                "tool_table_constraint": self.planner.collision.tool_table_constraint(
+                    arm, pose[:3, :3]
+                ),
+            }
+        )
+        return out
 
     def _check_action_budget(self, additional: int) -> None:
         if self.max_device_actions is None:

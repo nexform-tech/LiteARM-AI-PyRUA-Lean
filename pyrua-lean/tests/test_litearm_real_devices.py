@@ -69,6 +69,7 @@ def test_arm_wrapper_maps_measured_state_and_never_hides_a_fault(station):
     )
     handle.open()
     try:
+        assert handle._sdk.q_tol == 0.01  # Vendor default 0.03 must not govern arrival.
         state = handle.read()
         assert len(state["q_sdk"]) == 7
         assert state["q_model"] == pytest.approx(transport.q)
@@ -88,6 +89,62 @@ def test_arm_wrapper_maps_measured_state_and_never_hides_a_fault(station):
             handle.move_sync(list(transport.q), 0.2, cancel=cancel, timeout_s=5.0)
     finally:
         handle.close()
+
+
+def test_sdk_wait_uses_the_configured_service_arrival_bound(station):
+    transport = _EnabledTransport(port="fake", fw="Litearm2.1.0-7J", n=7)
+    handle = _ArmHandle(
+        station.arms["left"].arm,
+        station.calibration.arm("left"),
+        device_name="arrival_test",
+        transport_factory=lambda _port: transport,
+        settle_tolerance_rad=0.005,
+    )
+    handle.open()
+    try:
+        assert handle._sdk.q_tol == 0.005
+        handle._sdk.enable()
+        outcome = handle.move_sync(list(transport.q), 0.1, cancel=threading.Event(), timeout_s=5)
+        assert outcome.reached and outcome.max_joint_error_rad <= 0.005
+    finally:
+        handle.close()
+
+
+def test_sdk_tool_transform_and_rotation_match_the_local_planner(station):
+    import numpy as np
+    from litearm import _rot, tool
+
+    from pyrualean.hardware.kinematics import (
+        LitearmKinematics,
+        matrix_to_rpy,
+        rotation_error,
+        rpy_matrix,
+        slerp,
+    )
+
+    kin = LitearmKinematics(station.calibration)
+    cal = station.calibration.arm("left")
+    offset, rotation = tool.as_offset(
+        cal.flange_to_tcp[:3, 3], matrix_to_rpy(cal.flange_to_tcp[:3, :3])
+    )
+    rng = np.random.default_rng(34)
+    limits = np.asarray(cal.joint_limits_rad)
+    for _ in range(15):
+        q = rng.uniform(limits[:, 0], limits[:, 1])
+        flange = np.linalg.inv(cal.base_pose) @ kin.flange_pose("left", q)
+        pose = [*flange[:3, 3], *matrix_to_rpy(flange[:3, :3])]
+        sdk_tool = tool.to_tool(pose, offset, rotation)
+        expected = np.linalg.inv(cal.base_pose) @ kin.fk("left", q)
+        assert sdk_tool[:3] == pytest.approx(expected[:3, 3], abs=1e-10)
+        assert rotation_error(rpy_matrix(sdk_tool[3:]), expected[:3, :3]) < 1e-5
+        back = tool.to_flange(sdk_tool, offset, rotation)
+        assert back[:3] == pytest.approx(flange[:3, 3], abs=1e-10)
+        other = rpy_matrix(rng.uniform(-2.0, 2.0, 3))
+        assert np.allclose(
+            slerp(flange[:3, :3], other, 0.25),
+            _rot.rot_slerp(flange[:3, :3], other, 0.25),
+            atol=1e-9,
+        )
 
 
 class _State:

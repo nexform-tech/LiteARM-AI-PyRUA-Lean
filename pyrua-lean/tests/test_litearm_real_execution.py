@@ -275,6 +275,8 @@ def test_cancel_stops_between_segments_and_refuses_more_motion(tmp_path):
         )
         assert final["state"] == "cancelled"
         assert final["stop"]["confirmed"] is True
+        # Keep readback alive across heartbeats after a cooperative stop.
+        time.sleep(2 * config.service.heartbeat_s)
         status = client.status()
         assert status["state"] == "stopped"
         with pytest.raises(RpcError, match="stopped"):
@@ -287,6 +289,44 @@ def test_cancel_stops_between_segments_and_refuses_more_motion(tmp_path):
                     "digest": command_digest("grip", {"arm": "left", "command": "open"}),
                 },
             )
+    finally:
+        _stop(daemon, client)
+
+
+def test_clean_session_close_rearms_the_service(tmp_path):
+    config = _config(tmp_path)
+    daemon, client = _start(config)
+    try:
+        first = client.close_session()
+        assert first["state"] == "ready"
+        client.close()
+
+        second = HardwareClient(config)
+        second.connect()
+        second.open_session(client_id="second")
+        assert second.status()["state"] == "ready"
+        second.close_session()
+        second.close()
+    finally:
+        _stop(daemon, client)
+
+
+def test_cancel_stop_keeps_the_restart_latch(tmp_path):
+    config = _config(tmp_path / "cancel")
+    daemon, client = _start(config)
+    try:
+        reply = client.send_cancel()
+        assert reply["accepted"] is True
+        assert client.status()["state"] == "stopped"
+        closed = client.close_session()
+        assert closed["state"] == "stopped"
+        client.close()
+
+        third = HardwareClient(config)
+        third.connect()
+        with pytest.raises(RpcError, match="stopped"):
+            third.open_session(client_id="third")
+        third.close(force=True)
     finally:
         _stop(daemon, client)
 
@@ -548,6 +588,131 @@ def _single_arm_config(tmp_path: Path, arm: str = "left"):
         devices=(arm,),
         cameras=("cam_head", f"cam_{arm}_wrist"),
     )
+
+
+@pytest.mark.parametrize("copy_angles", [False, True])
+def test_line_refusal_never_dispatches_a_joint_swing(tmp_path, monkeypatch, copy_angles):
+    from pyrualean.hardware.planning import PlanningError
+
+    config = _single_arm_config(tmp_path)
+    daemon, client = _start(config)
+    try:
+        toolkit = _toolkit(config, client, tmp_path)
+        obs = toolkit.current_observation(refresh=True)
+        import numpy as np
+
+        target = np.asarray(obs.arm("left").tcp_pose).reshape(4, 4)[:3, 3].copy()
+        target[2] += 0.08
+        paths = []
+
+        def refuse(*args, **kwargs):
+            paths.append(kwargs["path"])
+            raise PlanningError("straight line is not achievable")
+
+        monkeypatch.setattr(toolkit.planner, "plan_move", refuse)
+        from pyrualean.hardware.kinematics import angles
+
+        orientation = {}
+        if copy_angles:
+            values = angles(np.asarray(obs.arm("left").tcp_pose).reshape(4, 4)[:3, :3])
+            orientation = dict(zip(("pitch", "yaw", "roll"), values, strict=True))
+        result = move_pose(toolkit, target, arm="left", path="line", **orientation)
+        assert paths == ["line"]
+        assert result["steps_used"] == 0 and not result["reached"]
+        assert "pitch=90" in result["note"]
+        assert "Copying those angles retries the same posture" in result["note"]
+        assert toolkit.device_steps == 0
+    finally:
+        _stop(daemon, client)
+
+
+def test_second_episode_limit_readback_executes_through_fake_rpc(tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    import numpy as np
+
+    recorded = load_station(ROOT / "tests/data/stations" / "litearm_single_right.safety-test.json")
+    fake_config = _single_arm_config(tmp_path, "right")
+    config = replace(
+        fake_config,
+        execution=replace(recorded.execution, mode=fake_config.execution.mode),
+        calibration=recorded.calibration,
+        calibration_path=recorded.calibration_path,
+        calibration_sha256=recorded.calibration_sha256,
+    )
+    q = np.array(
+        [
+            0.23220348358154297,
+            0.7265214920043945,
+            -0.3389406204223633,
+            -0.7516975402832031,
+            -1.210993766784668,
+            -1.5535593032836914,
+            1.429579734802246,
+        ]
+    )
+    limits = np.asarray(config.calibration.arm("right").joint_limits_rad)
+    daemon = _daemon(config)
+    daemon.station._q["right"] = q.copy()
+    commanded = []
+    original_move = daemon.station.move_joints
+
+    def checked_move(arm, q_sdk, speed, **kwargs):
+        model = config.calibration.arm(arm).model_from_sdk(q_sdk)
+        assert np.all(model >= limits[:, 0]) and np.all(model <= limits[:, 1])
+        commanded.append(model.copy())
+        return original_move(arm, q_sdk, speed, **kwargs)
+
+    monkeypatch.setattr(daemon.station, "move_joints", checked_move)
+    daemon.start_service()
+    daemon.listen("127.0.0.1", config.service.port)
+    client = HardwareClient(config)
+    try:
+        client.connect()
+        client.open_session(client_id="limit-readback-test")
+        toolkit = _toolkit(config, client, tmp_path)
+        before = toolkit.current_observation(refresh=True).arm("right")
+        assert before.q_model == pytest.approx(q, abs=1e-12)
+        moved = move_pose(
+            toolkit,
+            [0.02589393819755676, 0.4639370391448221, 0.24],
+            arm="right",
+            path="joint",
+            pitch=83.0623,
+            yaw=-2.6154,
+            roll=-93.6603,
+        )
+        assert moved["reached"] and moved["settled"], moved
+        assert moved["steps_used"] == len(commanded) == 4
+        assert commanded[0][5] == limits[5, 0]
+        assert client.status()["fault"] is None
+    finally:
+        _stop(daemon, client)
+
+
+def test_check_move_compares_candidates_without_dispatching_device_actions(tmp_path, monkeypatch):
+    config = _single_arm_config(tmp_path)
+    daemon, client = _start(config)
+    try:
+        toolkit = _toolkit(config, client, tmp_path)
+        obs = toolkit.current_observation(refresh=True)
+        import numpy as np
+
+        target = np.asarray(obs.arm("left").tcp_pose).reshape(4, 4)[:3, 3]
+
+        def no_dispatch(*args, **kwargs):
+            raise AssertionError("check_move must not submit a device command")
+
+        monkeypatch.setattr(client, "execute_command", no_dispatch)
+        result = toolkit.execute_tool("check_move", {"xyz": target.tolist(), "arm": "left"})
+        assert result["feasible"], result
+        assert result["device_actions"] == 0 and toolkit.device_steps == 0
+        assert result["tool_table_constraint"]["tcp_min_z_m"] > config.calibration.table.z_m
+        refused = toolkit.execute_tool("check_move", {"xyz": [0.0, 0.0, 2.0], "arm": "left"})
+        assert not refused["feasible"] and refused["error"]
+        assert refused["device_actions"] == 0
+    finally:
+        _stop(daemon, client)
 
 
 def test_single_arm_station_observes_and_moves_only_the_active_arm(tmp_path):
@@ -854,7 +1019,15 @@ def test_lite_arm_station_opens_reads_and_stops_without_a_gripper(tmp_path, monk
         def close(self) -> None:
             self.closed = True
 
-    def make_arm_handle(arm_config, calibration, *, device_name: str, transport_factory=None):
+    def make_arm_handle(
+        arm_config,
+        calibration,
+        *,
+        device_name: str,
+        transport_factory=None,
+        settle_tolerance_rad=0.01,
+    ):
+        assert settle_tolerance_rad == config.execution.settle_tolerance_rad
         handle = _FakeArmHandle(
             arm_config,
             calibration,

@@ -100,7 +100,7 @@
   "perception": {
     "sam3": {
       "mode": "http",
-      "endpoint": "http://192.168.55.1:8790",
+      "endpoint": "http://sam3-host.example:8790",
       "timeout_s": 60.0,
       "checkpoint": null,
       "cuda_device": null,

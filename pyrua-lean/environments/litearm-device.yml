@@ -22,5 +22,8 @@ dependencies:
       - numpy==1.26.4
       - pillow==13.0.0
       - opencv-python-headless==4.11.0.86
+      # Python wrapper for the Intel D435/D435i; the wheel bundles librealsense.
+      # The realsense-viewer is not required at runtime.
+      - pyrealsense2==2.56.5.9235
       - pyserial>=3.4
       - pytest==9.1.1

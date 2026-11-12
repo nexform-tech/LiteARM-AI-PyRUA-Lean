@@ -116,6 +116,11 @@ def orientation(pitch: float, yaw: float, roll: float) -> np.ndarray:
     return rot_z(math.radians(90.0 + yaw)) @ rot_y(math.radians(pitch)) @ rot_x(math.radians(roll))
 
 
+# Readback at a firmware limit can straddle it by encoder quantization. FK
+# retains the actual reading within this 0.057-degree observation tolerance;
+# IK targets and trajectory waypoints still use the exact calibrated limits.
+MEASURED_LIMIT_TOL_RAD = 0.001
+
 _VERTICAL = math.sin(math.radians(1.0))
 
 
@@ -149,25 +154,27 @@ def rotation_error(a: np.ndarray, b: np.ndarray) -> float:
 
 
 def rotvec(rot: np.ndarray) -> np.ndarray:
-    r = np.asarray(rot, dtype=float)
-    c = max(-1.0, min(1.0, (float(np.trace(r)) - 1.0) / 2.0))
-    angle = math.acos(c)
-    if angle < 1e-9:
+    # Quaternion logarithm also handles a half-turn, where the skew/sin(theta)
+    # matrix formula is indeterminate. Choose the shortest SO(3) branch.
+    quat = np.asarray(quat_wxyz(np.asarray(rot, dtype=float)))
+    quat /= np.linalg.norm(quat)
+    if quat[0] < 0.0:
+        quat *= -1.0
+    norm = float(np.linalg.norm(quat[1:]))
+    if norm < 1e-12:
         return np.zeros(3)
-    axis = np.array([r[2, 1] - r[1, 2], r[0, 2] - r[2, 0], r[1, 0] - r[0, 1]])
-    return axis * (angle / (2.0 * math.sin(angle)))
+    angle = 2.0 * math.atan2(norm, float(quat[0]))
+    return quat[1:] * (angle / norm)
 
 
 def slerp(a: np.ndarray, b: np.ndarray, t: float) -> np.ndarray:
     a = np.asarray(a, dtype=float)
     b = np.asarray(b, dtype=float)
-    c = max(-1.0, min(1.0, float(np.trace(a.T @ b) - 1.0) / 2.0))
-    angle = math.acos(c)
-    if angle < 1e-9:
+    relative = rotvec(a.T @ b)
+    angle = float(np.linalg.norm(relative))
+    if angle < 1e-12:
         return a.copy()
-    out = (math.sin((1.0 - t) * angle) * a + math.sin(t * angle) * b) / math.sin(angle)
-    u, _, vh = np.linalg.svd(out)
-    return u @ vh
+    return a @ axis_angle(relative / angle, float(t) * angle)
 
 
 def quat_wxyz(rot: np.ndarray) -> tuple[float, float, float, float]:
@@ -326,7 +333,9 @@ class LitearmKinematics:
         if not np.all(np.isfinite(q)):
             raise ValueError("joint angles must be finite")
         limits = np.asarray(cal.joint_limits_rad)
-        if np.any(q < limits[:, 0] - 1e-9) or np.any(q > limits[:, 1] + 1e-9):
+        if np.any(q < limits[:, 0] - MEASURED_LIMIT_TOL_RAD) or np.any(
+            q > limits[:, 1] + MEASURED_LIMIT_TOL_RAD
+        ):
             raise ValueError(f"joint angles outside the calibrated limits: {q.tolist()}")
         t = np.asarray(cal.base_pose, dtype=float).copy()
         out = []
@@ -345,7 +354,9 @@ class LitearmKinematics:
         if q.shape != (7,) or not np.all(np.isfinite(q)):
             raise ValueError("a LiteArm arm has 7 finite joints")
         limits = np.asarray(cal.joint_limits_rad)
-        if np.any(q < limits[:, 0] - 1e-9) or np.any(q > limits[:, 1] + 1e-9):
+        if np.any(q < limits[:, 0] - MEASURED_LIMIT_TOL_RAD) or np.any(
+            q > limits[:, 1] + MEASURED_LIMIT_TOL_RAD
+        ):
             raise ValueError(f"joint angles outside the calibrated limits: {q.tolist()}")
         t = np.asarray(cal.base_pose, dtype=float).copy()
         moving_index = 0
@@ -401,6 +412,13 @@ class LitearmKinematics:
         q = np.clip(q, lim[:, 0], lim[:, 1])
         target = np.asarray(target, dtype=float)
         damping = 0.02
+
+        def residual(candidate: np.ndarray) -> np.ndarray:
+            pose = self.fk(arm, candidate)
+            return np.concatenate(
+                [target[:3, 3] - pose[:3, 3], rot_weight * rotvec(target[:3, :3] @ pose[:3, :3].T)]
+            )
+
         for _ in range(iterations):
             jac, end = self.jacobian(arm, q)
             dp = target[:3, 3] - end[:3, 3]
@@ -412,14 +430,33 @@ class LitearmKinematics:
             err = np.concatenate([dp, rot_weight * dr])
             j = jac.copy()
             j[3:] *= rot_weight
-            try:
-                step = j.T @ np.linalg.solve(j @ j.T + damping**2 * np.eye(6), err)
-            except np.linalg.LinAlgError:
-                break
+            # Clipping an unconstrained step at a joint limit can make its
+            # other joints increase the error. Re-solve with outward-moving
+            # saturated joints held fixed, then require an actual improvement.
+            free = np.ones(7, dtype=bool)
+            step = np.zeros(7)
+            for _active in range(8):
+                jf = j[:, free]
+                step[:] = 0.0
+                step[free] = jf.T @ np.linalg.solve(jf @ jf.T + damping**2 * np.eye(6), err)
+                outward = ((q <= lim[:, 0] + 1e-8) & (step < 0.0)) | (
+                    (q >= lim[:, 1] - 1e-8) & (step > 0.0)
+                )
+                if not np.any(outward & free):
+                    break
+                free &= ~outward
             norm = float(np.linalg.norm(step))
             if norm > 0.20:
                 step *= 0.20 / norm
-            q = np.clip(q + step, lim[:, 0], lim[:, 1])
+            cost = float(err @ err)
+            for scale in (1.0, 0.5, 0.25, 0.125, 0.0625, 0.03125, 0.015625):
+                candidate = np.clip(q + scale * step, lim[:, 0], lim[:, 1])
+                candidate_err = residual(candidate)
+                if float(candidate_err @ candidate_err) < cost - 1e-14:
+                    q = candidate
+                    break
+            else:
+                break
         end = self.fk(arm, q)
         pos_err = float(np.linalg.norm(target[:3, 3] - end[:3, 3]))
         rot_err = rotation_error(target[:3, :3], end[:3, :3])
@@ -483,20 +520,36 @@ class LitearmKinematics:
         count = max(1, math.ceil(dist / step_m), math.ceil(turn / step_deg))
         q = tuple(float(v) for v in start_q)
         out: list[tuple[float, ...]] = []
-        for k in range(1, count + 1):
-            t = k / count
-            way = np.eye(4)
-            way[:3, :3] = slerp(start[:3, :3], target[:3, :3], t)
-            way[:3, 3] = p0 + (target[:3, 3] - p0) * t
-            res = self.solve(arm, way, q)
-            if not res.ok:
-                return out, f"the line leaves the arm's reach {t * dist:.3f} m along it"
-            if res.collides:
-                return out, "the line takes the arm into the table or an obstacle"
-            if max(abs(a - b) for a, b in zip(res.q, q, strict=True)) > max_joint_step_rad:
-                return out, "the line passes a singular pose (the wrist would flip)"
+        progress = 0.0
+        increment = 1.0 / count
+        while progress < 1.0 - 1e-12:
+            advance = min(increment, 1.0 - progress)
+            why = None
+            for _refinement in range(8):
+                t = progress + advance
+                way = np.eye(4)
+                way[:3, :3] = slerp(start[:3, :3], target[:3, :3], t)
+                way[:3, 3] = p0 + (target[:3, 3] - p0) * t
+                res = self.solve(arm, way, q)
+                if res.collides:
+                    return out, "the line takes the arm into the table or an obstacle"
+                if not res.ok:
+                    why = f"the line leaves the arm's reach {t * dist:.3f} m along it"
+                elif max(abs(a - b) for a, b in zip(res.q, q, strict=True)) > max_joint_step_rad:
+                    why = "the line has no continuous IK branch within the joint-step limit"
+                else:
+                    why = None
+                    break
+                # A large joint delta at a coarse TCP sample is not proof of
+                # singularity. Continue the same IK branch at finer spacing.
+                advance *= 0.5
+            if why is not None:
+                return out, why
             q = res.q
             out.append(q)
+            progress = t
+            if len(out) >= 1000:
+                return out, "straight-path refinement exceeded 1000 waypoints"
         return out, None
 
     def camera_pose(self, camera: str, arm: str, q_model: Sequence[float]) -> np.ndarray:
@@ -611,7 +664,7 @@ class CollisionModel:
         out.append(
             (
                 flange[:3, 3],
-                tcp[:3, 3],
+                tcp[:3, 3] + tcp[:3, :3] @ np.array([tool.body_end_offset_m, 0.0, 0.0]),
                 float(tool.body_radius_m),
                 f"{arm}_tool_body",
             )
@@ -636,16 +689,69 @@ class CollisionModel:
             <= table.y_max_m + table.edge_margin_m + margin
         )
 
+    def tool_table_constraint(self, arm: str, rotation: np.ndarray) -> dict[str, Any]:
+        """TCP-z minimum imposed by the configured tool/table check.
+
+        This is an analytic diagnostic for the given orientation, not a full
+        reachability/contact check. Arm links, obstacles and fingers still need
+        complete trajectory validation. No physical finger length is inferred.
+        """
+        cal = self.calibration.arm(arm)
+        tool = cal.tool_collision
+        if tool.table_check_mode == "tcp_plane":
+            return {
+                "source": "tcp_table_plane",
+                "table_check_mode": tool.table_check_mode,
+                "table_z_m": self.calibration.table.z_m,
+                "table_margin_m": tool.table_margin_m,
+                "tcp_min_z_m": self.calibration.table.z_m + tool.table_margin_m,
+                "note": "Checks TCP height only for the tool; body and finger geometry "
+                "are ignored for table contact. Arm-link checks remain active.",
+            }
+        offset = np.asarray(cal.flange_to_tcp)
+        flange_from_tcp = -np.asarray(rotation) @ offset[:3, :3].T @ offset[:3, 3]
+        body_end_from_tcp = np.asarray(rotation) @ np.array([tool.body_end_offset_m, 0.0, 0.0])
+        body_min = (
+            self.calibration.table.z_m
+            + tool.table_margin_m
+            + cal.tool_collision.body_radius_m
+            - min(float(body_end_from_tcp[2]), float(flange_from_tcp[2]))
+        )
+        return {
+            "source": "calibrated_tool_body_capsule",
+            "table_check_mode": tool.table_check_mode,
+            "table_z_m": self.calibration.table.z_m,
+            "table_margin_m": tool.table_margin_m,
+            "body_radius_m": cal.tool_collision.body_radius_m,
+            "tcp_min_z_m": float(body_min),
+            "model_tip_offset_m": cal.tool_collision.tip_offset_m,
+            "note": "Applies over the table for this orientation; full path validation is "
+            "still required. Model fingertip offset is not a measured contact depth.",
+        }
+
     def table_violations(self, arm: str, q: Sequence[float]) -> list[str]:
         table = self.calibration.table
+        tool = self.calibration.arm(arm).tool_collision
         bad = []
+        if tool.table_check_mode == "tcp_plane":
+            tcp = self.kinematics.fk(arm, q)[:3, 3]
+            if self._point_in_table(tcp) and float(tcp[2]) < table.z_m + tool.table_margin_m:
+                bad.append(f"{arm}_tcp_table_plane")
         # The first link is the base column bolted to the table; its lower end is
         # supposed to touch the table, so it is not a collision.
         for a, b, radius, name in self._link_segments(arm, q)[1:]:
+            # Geometry mode leaves fingertips to the configured hard floor.
+            # TCP-plane mode uses the grasp point for tool/table contact.
+            # Arm links retain their capsule/table check in both modes.
+            if "finger" in name:
+                continue
+            if "tool_body" in name and tool.table_check_mode == "tcp_plane":
+                continue
             # sample the segment; the radius is added below the table plane
             for t in np.linspace(0.0, 1.0, 7):
                 p = a + (b - a) * t
-                if self._point_in_table(p) and float(p[2]) - radius < table.z_m + 0.002:
+                margin = tool.table_margin_m if "tool_body" in name else 0.002
+                if self._point_in_table(p) and float(p[2]) - radius < table.z_m + margin:
                     bad.append(name)
                     break
         return bad
@@ -666,9 +772,45 @@ class CollisionModel:
                     bad.append(f"{name}->{obstacle.name}")
         return bad
 
+    def z_floor_violations(self, arm: str, q: Sequence[float]) -> list[str]:
+        """Refuse the configured tool reference below the hard table floor.
+
+        The floor is a station-wide minimum for the **lowest finger point**,
+        in geometry mode. In tcp_plane mode it applies to the TCP instead.
+        The LiteGrip fingers extend beyond the grasp point,
+        and a TCP above the table does not prove the tips are.  This is also
+        separate from the x/y-limited table collision check: the fingertips
+        may touch the calibrated floor plane but never go below it, wherever
+        the arm is in the workspace.
+        """
+
+        floor = float(self.calibration.table.z_floor_m)
+        if self.calibration.arm(arm).tool_collision.table_check_mode == "tcp_plane":
+            low = float(self.kinematics.fk(arm, q)[2, 3])
+            if low < floor - 1e-6:
+                return [f"{arm}_TCP z={low:.4f} m below the hard table floor {floor:.4f} m"]
+            return []
+        segments = self._link_segments(arm, q)
+        tips = [
+            float(point[2])
+            for first, second, _radius, name in segments
+            if "finger" in name
+            for point in (first, second)
+        ]
+        if not tips:
+            tips = [float(self.kinematics.fk(arm, q)[2, 3])]
+        low = min(tips)
+        if low < floor - 1e-6:
+            return [f"{arm}_fingertip z={low:.4f} m below the hard table floor {floor:.4f} m"]
+        return []
+
     def self_violations(self, arm: str, q: Sequence[float]) -> list[str]:
         segments = self._link_segments(arm, q)
-        bad = self.table_violations(arm, q) + self.obstacle_violations(arm, q)
+        bad = (
+            self.table_violations(arm, q)
+            + self.obstacle_violations(arm, q)
+            + self.z_floor_violations(arm, q)
+        )
         # Consecutive and next-consecutive links share joints and their
         # conservative capsules overlap by construction; skip |i-j| <= 2.
         for i in range(len(segments)):

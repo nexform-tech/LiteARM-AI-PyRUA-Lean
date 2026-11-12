@@ -14,12 +14,12 @@ The wrappers do not invent a fallback: if a driver cannot be imported or a
 device does not answer, the error is explicit and the service refuses motion.
 
 Verified against:
-* ``litearm-python`` 2.1.0 at ``/home/hzh/Code/litearm-python``: seven joints,
+* ``litearm-python`` 2.1.0 at ``~/Code/litearm-python``: seven joints,
   ``get_state(refresh=True)`` returning a ``Msg`` envelope, blocking
   ``movej_sync(q, speed)`` with ``speed`` in 0..1, ``get_tcp`` returning the
   flange pose, ``get_tool_tcp`` the tool pose, ``emergency_stop`` as a firmware
   command, and ``disable``/``park`` as separate operations.
-* ``litegrip-python`` 2.2.0, local `/home/hzh/Code/NEXTFORM/litegrip-python`,
+* ``litegrip-python`` 2.2.0, local `~/Code/NEXTFORM/litegrip-python`,
   source commit 6b5fdce: ``grasp(force_n,
   hold_s=0)`` blocks while holding and is ended by ``release()`` from another
   thread; ``get_state`` reports measured ``position_mm`` and freshness;
@@ -35,6 +35,7 @@ grasp behaviour.  These are field-acceptance items in
 
 from __future__ import annotations
 
+import importlib
 import math
 import threading
 import time
@@ -44,7 +45,7 @@ from typing import Any
 import numpy as np
 
 from .config import ArmCalibration, Calibration, ExecutionMode, StationConfig
-from .kinematics import LitearmKinematics, matrix_to_rpy
+from .kinematics import CollisionModel, LitearmKinematics, matrix_to_rpy
 from .protocol import StopKind, StopResult, now_monotonic_ns, now_wall_ns
 
 
@@ -172,7 +173,11 @@ class StationBase:
 
 def _import_sdk(module_name: str, device: str) -> Any:
     try:
-        return __import__(module_name, fromlist=["*"])
+        # ``__import__(..., fromlist=["*"])`` evaluates the package's ``__all__``
+        # and therefore imports optional attributes (e.g. litegrip's Zenoh
+        # transport, which needs the optional ``zenoh`` dependency).  The plain
+        # module object is all the callers need.
+        return importlib.import_module(module_name)
     except ImportError as exc:
         raise DeviceError(
             f"{module_name} is not installed in the device environment; install the "
@@ -253,6 +258,24 @@ class _GripperHandle:
             )
         self._sdk = grip
         state = grip.get_state(wait=False)
+        if getattr(self.config, "enable_on_open", False) and not getattr(
+            state, "is_enabled", False
+        ):
+            # Explicit opt-in (devices.<arm>.gripper.enable_on_open): the
+            # operator has authorized enabling this calibrated gripper.  The
+            # service keeps the CAN transport open, so the motor stays enabled
+            # for the episode.
+            try:
+                grip.enable()
+                grip.wait_for_ready(timeout=float(self.config.grasp_timeout_s))
+            except Exception as exc:  # noqa: BLE001 - vendor failure kept as evidence
+                grip.disconnect()
+                raise DeviceError(
+                    f"could not enable the calibrated gripper: {exc}",
+                    device=self.device_name,
+                    cause=exc,
+                ) from None
+            state = grip.get_state(wait=False)
         if self.require_enabled and not getattr(state, "is_enabled", False):
             raise NotReady(
                 "the gripper is not enabled; the service never enables or clears a "
@@ -478,11 +501,13 @@ class _ArmHandle:
         *,
         device_name: str,
         transport_factory: Any = None,
+        settle_tolerance_rad: float = 0.01,
     ) -> None:
         self.config = config
         self.calibration = calibration
         self.device_name = device_name
         self.transport_factory = transport_factory
+        self.settle_tolerance_rad = float(settle_tolerance_rad)
         self._sdk: Any = None
         self._litearm: Any = None
         self.firmware = ""
@@ -503,6 +528,9 @@ class _ArmHandle:
             else:
                 arm = sdk.Arm()
             arm.move_timeout = float(self.config.move_timeout_s)
+            # SDK defaults to 0.03 rad, which can return before the service's
+            # stricter arrival check. Wait for the same measured joint bound.
+            arm.q_tol = self.settle_tolerance_rad
             arm.connect()
         except Exception as exc:  # noqa: BLE001
             raise DeviceError(
@@ -672,7 +700,7 @@ class _ArmHandle:
             q_model=tuple(float(v) for v in q_model),
             q_sdk=tuple(float(v) for v in q_actual),
             q_target_model=tuple(float(v) for v in target_model),
-            reached=err <= 0.02,
+            reached=err <= self.settle_tolerance_rad,
             max_joint_error_rad=err,
             started_at_wall_ns=started,
             finished_at_wall_ns=now_wall_ns(),
@@ -738,6 +766,7 @@ class LiteArmStation(StationBase):
         self.active_arms = tuple(config.execution.active_arms)
         self._active = frozenset(self.active_arms)
         self.kinematics = LitearmKinematics(calibration)
+        self.collision = CollisionModel(calibration, self.kinematics)
         self.arm_transport_factory = arm_transport_factory
         self.arms: dict[str, _ArmHandle] = {}
         self.grippers: dict[str, _GripperHandle] = {}
@@ -767,6 +796,7 @@ class LiteArmStation(StationBase):
                     self.calibration.arm(arm),
                     device_name=f"arm_{arm}",
                     transport_factory=self.arm_transport_factory,
+                    settle_tolerance_rad=self.config.execution.settle_tolerance_rad,
                 )
                 handle.open()
                 self.arms[arm] = handle
@@ -896,6 +926,13 @@ class LiteArmStation(StationBase):
         timeout_s: float,
     ) -> MotionOutcome:
         self._require_active(arm, device=f"arm_{arm}")
+        q_model = [float(v) for v in self.calibration.arm(arm).model_from_sdk(q_sdk)]
+        floor_violations = self.collision.z_floor_violations(arm, q_model)
+        if floor_violations:
+            raise DeviceError(
+                "; ".join(floor_violations),
+                device=f"arm_{arm}",
+            )
         return self.arms[arm].move_sync(q_sdk, speed, cancel=cancel, timeout_s=timeout_s)
 
     def set_gripper(

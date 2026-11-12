@@ -82,6 +82,12 @@ def add_cell_args(parser: argparse.ArgumentParser) -> None:
         help="override execution.mode; live requires an executable calibration",
     )
     parser.add_argument("--suite", default="hardware", help="run label (default: hardware)")
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=0,
+        help="run seed recorded with the episode (not a simulator layout)",
+    )
 
 
 def cell_from_args(args: argparse.Namespace) -> Cell:
@@ -240,6 +246,7 @@ def dump_card(toolkit: HardwareToolkit, cell: Cell, out_dir: Path) -> TaskCard:
             continue
         images[camera] = str(target)
     table = toolkit.calibration.table
+    world = toolkit.calibration.raw.get("world", {})
     effective_budget = toolkit.max_device_actions or cell.max_episode_steps
     facts: dict[str, Any] = {
         "station": toolkit.config.station_id,
@@ -248,8 +255,9 @@ def dump_card(toolkit: HardwareToolkit, cell: Cell, out_dir: Path) -> TaskCard:
         "calibration version / sha256": (
             f"{toolkit.calibration.version} / {toolkit.calibration.sha256}"
         ),
-        "world origin": "centre of the table edge nearest the robots",
-        "axes": "+x right, +y into the table, +z up; table surface z = 0; metres, radians",
+        "world origin": world.get("origin", "configured calibration world frame"),
+        "axes": world.get("axes", "+x right, +y forward, +z up; metres, radians"),
+        "table surface z": f"{table.z_m:.4f} m in the calibration world frame",
         "quaternion order": "[w, x, y, z]",
         "table extent": (
             f"x [{table.x_min_m}, {table.x_max_m}] m, y [{table.y_min_m}, {table.y_max_m}] m"
@@ -268,11 +276,24 @@ def dump_card(toolkit: HardwareToolkit, cell: Cell, out_dir: Path) -> TaskCard:
         "state.step semantics": "observation snapshot number, not a simulator step",
         "steps_used semantics": "executed synchronous trajectory segments / gripper actions",
         "task success": "not measured; environment_success_known=false",
+        "cube grasp enabled": toolkit.config.raw.get("manipulation", {}).get("enable_cube_grasp")
+        is True,
+        "cube stack enabled": toolkit.config.raw.get("manipulation", {}).get("enable_cube_stack")
+        is True,
+        "camera frame": "opengl: +x right, +y up, looking along -z; OpenCV converted at import",
     }
     for name in observation.arms:
         arm = observation.arms[name]
-        facts[f"{name} measured TCP [x, y, z]"] = (
-            f"[{arm.tcp_pose[0]:.4f}, {arm.tcp_pose[1]:.4f}, {arm.tcp_pose[2]:.4f}] m"
+        xyz = [arm.tcp_pose[i] for i in (3, 7, 11)]
+        facts[f"{name} measured TCP [x, y, z]"] = f"[{xyz[0]:.4f}, {xyz[1]:.4f}, {xyz[2]:.4f}] m"
+        tool = toolkit.calibration.arm(name).tool_collision
+        facts[f"{name} TCP reference"] = toolkit.calibration.raw["arms"][name].get(
+            "tcp_reference", "configured grasp point"
+        )
+        facts[f"{name} tool table check"] = (
+            f"{tool.table_check_mode}, table margin {tool.table_margin_m} m; "
+            f"hard floor {table.z_floor_m} m applies to "
+            + ("TCP" if tool.table_check_mode == "tcp_plane" else "lowest finger point")
         )
         facts[f"{name} measured gripper opening / width"] = (
             "not configured (arm-only station)"

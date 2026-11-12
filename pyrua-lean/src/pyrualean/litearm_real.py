@@ -47,14 +47,15 @@ ARMS = ("left", "right")
 class RealArmState:
     """One measured arm/gripper in a hardware observation.
 
-    tcp_pos: measured grasp point [x, y, z], metres, in the calibrated world
-        frame (origin at the centre of the near table edge, +x right, +y into
-        the table, +z up, table z = 0).
+    tcp_pos: feedback-derived TCP [x, y, z], metres, computed from measured
+        joints and calibration. World origin, axes and table z come from the
+        task card. With ``fingertip_midpoint``, this is the midpoint of the
+        two finger ends, not the finger-pad centre. Feedback-derived does not
+        certify absolute TCP accuracy or physical verification of the offset.
     pitch / yaw / roll: orientation of the measured TCP, degrees; the existing
         ``robo`` convention is preserved (pitch 90 = pointing down).
-    eef_pos / eef_quat: the same TCP pose (the station defines the TCP as the
-        grasp point; the flange pose is available in the observation under
-        ``flange_pos`` but is not the policy-facing end effector).
+    eef_pos / eef_quat: the same configured TCP pose; the flange is a separate
+        pose in the underlying observation, not the policy-facing effector.
     gripper: measured normalised opening (1.0 = measured open limit,
         0.0 = measured closed limit); ``None`` when this arm has no gripper.
     width_m: measured opening across the finger pads, metres; ``None`` when
@@ -62,6 +63,7 @@ class RealArmState:
     joints: seven measured model-side joint angles, radians.
     data_age_s: age of the encoder state when the snapshot was made.
     fault / fault_detail: firmware fault evidence, not a command target.
+    No measured gripper-force field is exposed by this public state type.
     """
 
     tcp_pos: tuple[float, float, float]
@@ -209,6 +211,57 @@ class RealPlace:
 
 
 @dataclass(frozen=True)
+class RealGrasp:
+    """Measured evidence from one cube grasp; not an independent task verdict.
+
+    ``grasped`` requires centred, parallel, sufficiently deep engagement,
+    a stable nominal hold, a settled carry baseline and a small vertical lift.
+    ``holding`` alone remains a candidate. ``stages`` records intermediate
+    results; failed lifts preserve the squeeze instead of dropping the cube.
+    """
+
+    arm: str
+    grasped: bool
+    failure_stage: str | None
+    note: str | None
+    target_xyz: tuple[float, float, float]
+    final_xyz: tuple[float, float, float]
+    overlap_fraction: float | None
+    baseline_opening: float | None
+    baseline_width_m: float | None
+    lift_reached: bool
+    slip: bool
+    holding: bool
+    tcp_to_bottom: float | None
+    steps_used: int
+    stages: tuple[dict[str, Any], ...]
+    measured: bool = True
+
+
+@dataclass(frozen=True)
+class RealCubeStack:
+    """A bounded stacking attempt; completion is not independent task success."""
+
+    arm: str
+    completed: bool
+    failure_stage: str | None
+    note: str | None
+    support_xyz: tuple[float, float, float] | None
+    support_top: float | None
+    landing_tcp_xy: tuple[float, float] | None
+    held_offset_xy: tuple[float, float] | None
+    carry_z: float | None
+    aligned: bool
+    placed: bool
+    released: bool
+    safe_to_home: bool
+    steps_used: int
+    stages: tuple[dict[str, Any], ...]
+    measured: bool = True
+    error_code: str | None = None
+
+
+@dataclass(frozen=True)
 class RealSegment:
     """Outcome of ``segment``: SAM3 mask statistics in the current snapshot."""
 
@@ -219,6 +272,10 @@ class RealSegment:
     box: Any
     camera: str
     measured: bool = True
+    error_code: str | None = None
+    search_roi_rc: tuple[int, int, int, int] | None = None
+    captured_at_wall_ns: int | None = None
+    note: str | None = None
 
 
 @dataclass(frozen=True)
@@ -227,11 +284,19 @@ class RealObjectSight:
 
     measurement_failed: True when no reliable 3-D extent could be measured
         (missing depth and fewer than two calibrated views, too few points,
-        invalid calibration).  ``center_xyz`` and the extents are None then;
-        no table intersection or fixed height is substituted.
-    source: ``"depth"`` or ``"multiview"``.
+        invalid calibration). ``center_xyz`` and object extents are None then.
+        ``table_projection`` can still provide depth-free approximate x/y and
+        heading; it never supplies object height.
+    source: ``"depth"``, ``"multiview"`` or ``"calibrated_table"``.
     views: number of calibrated views that produced a mask and took part.
     measurement_quality: point/voxel counts, valid-depth ratio, etc.
+        height_reliable, center_reliable and footprint_reliable are independent
+        geometry checks. Read geometry_confirmed for two distinct valid captures.
+        partial_measurement can report a visible top without authorizing a centre.
+    within_table_bounds / footprint_within_table_bounds: whether the measured
+        centre / footprint lies in the calibrated operating region. Perception
+        can measure outside objects; this does not permit grasping there.
+    bounds_error: outside_calibrated_table when the footprint is outside.
     """
 
     found: bool
@@ -251,6 +316,18 @@ class RealObjectSight:
     source: str | None = None
     measurement_failed: bool = False
     measurement_quality: dict[str, Any] | None = None
+    table_projection: dict[str, Any] | None = None
+    within_table_bounds: bool | None = None
+    footprint_within_table_bounds: bool | None = None
+    bounds_error: str | None = None
+    geometry_confirmed: bool = False
+    error_code: str | None = None
+    captured_at_wall_ns: int | None = None
+    geometry_mode: str = "supported"
+    search_roi_rc: tuple[int, int, int, int] | None = None
+    rgb_footprint: dict[str, Any] | None = None
+    tracking: dict[str, Any] | None = None
+    partial_measurement: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -311,9 +388,10 @@ def _angle_value(angles: dict[str, Any], name: str) -> float:
 class LitearmRealRobot(LitearmRobot):
     """Calibrated LiteArm arms with LiteGrip grippers at a real station.
 
-    World frame: origin at the centre of the table edge nearest the robots,
-    +x right, +y into the table, +z up, table surface z = 0.  Metres and
-    degrees.  The arms are ``"left"`` and ``"right"``; orientations and the
+    World frame and table height come from the calibration and task card.
+    Positions refer to the configured TCP control point; a fingertip TCP
+    targets the midpoint of the two finger ends. Metres and degrees.
+    The arms are ``"left"`` and ``"right"``; orientations and the
     ``pitch`` / ``yaw`` / ``roll`` convention are the same as the LiteArm
     adapter: pitch 90 points straight down, yaw is the heading on the table,
     roll turns the fingers about the pointing direction.
@@ -352,11 +430,15 @@ class LitearmRealRobot(LitearmRobot):
         RealGripper,
         RealHome,
         RealPlace,
+        RealGrasp,
+        RealCubeStack,
         RealObjectSight,
         RealSegment,
         RealSeenPoint,
     )
-    STATEFUL_TOOLS: ClassVar[frozenset[str]] = frozenset({"move_pose", "grip", "home", "place_on"})
+    STATEFUL_TOOLS: ClassVar[frozenset[str]] = frozenset(
+        {"move_pose", "grip", "home", "place_on", "grasp_cube", "stack_cube"}
+    )
     ABSENT_MEMBERS: ClassVar[frozenset[str]] = frozenset(
         {"done", "world_map", "pi0_pick", "region_center"}
     )
@@ -376,6 +458,18 @@ class LitearmRealRobot(LitearmRobot):
         "holding",
         "width_m",
         "safe_to_home",
+        "grasped",
+        "failure_stage",
+        "overlap_fraction",
+        "baseline_width_m",
+        "slip",
+        "aligned",
+        "completed",
+        "bounds_error",
+        "error_code",
+        "within_table_bounds",
+        "geometry_confirmed",
+        "geometry_mode",
     )
 
     def pi0_pick(self, *args: Any, **kwargs: Any) -> Any:
@@ -499,6 +593,42 @@ class LitearmRealRobot(LitearmRobot):
 
     # -- manipulation -------------------------------------------------------
 
+    def check_move(
+        self,
+        xyz: Any,
+        arm: str = "right",
+        pitch: float | None = None,
+        yaw: float | None = None,
+        roll: float | None = None,
+        path: str = "auto",
+    ) -> dict[str, Any]:
+        """Check a candidate move without executing device actions.
+
+        Uses the latest measured start, joint limits and full path collision
+        checks. Compare nearby candidate heights (a few mm apart) before
+        choosing a descent; a refused low target does not require a large
+        upward jump. Compare line and auto when the straight path is refused.
+        Auto permits a joint swing, so inspect the scene for object clearance:
+        movable objects are not in the fixed collision model.
+
+        Returns feasible, error/detail, selected path, planned_xyz, waypoint
+        count, duration, note and tool_table_constraint (TCP-z lower bound
+        from the configured tool/table model). No motion or gripper command
+        is issued. A later move_to re-plans from fresh state; this does not
+        reserve a trajectory or prove the intended object will be held.
+        """
+        target = _floats(xyz, 3, "xyz")
+        if path not in ("auto", "line", "joint"):
+            raise ValueError("path must be 'auto', 'line' or 'joint'")
+        kwargs: dict[str, Any] = {"xyz": list(target), "arm": _arm(arm), "path": path}
+        for name, value in (("pitch", pitch), ("yaw", yaw), ("roll", roll)):
+            if value is not None:
+                value = float(value)
+                if not math.isfinite(value):
+                    raise ValueError(f"{name} must be finite")
+                kwargs[name] = value
+        return dict(self._readonly("check_move", kwargs))
+
     def move_to(
         self,
         xyz: Any,
@@ -509,7 +639,11 @@ class LitearmRealRobot(LitearmRobot):
         roll: float | None = None,
         path: str = "auto",
     ) -> RealMove:
-        """Move one arm's measured grasp point to a world position and orientation.
+        """Move one arm's configured TCP to a world position and orientation.
+
+        With the ``fingertip_midpoint`` profile this controls the midpoint of
+        the two finger ends, not the finger-pad centre or flange. The station
+        transform already includes the offset; do not add it again to targets.
 
         The target is planned from the latest measured state.  A straight TCP
         line is generated and checked waypoint by waypoint; synchronous joint
@@ -518,7 +652,7 @@ class LitearmRealRobot(LitearmRobot):
         ``blocked`` means the measured arm stopped short of a feasible plan.
 
         Args:
-            xyz: measured grasp-point target [x, y, z], metres.
+            xyz: configured TCP target [x, y, z], metres in the task-card frame.
             arm: ``"left"`` or ``"right"``.
             gripper: ``robo.CLOSE`` (1), ``robo.OPEN`` (-1) or ``robo.KEEP``
                 (0).  An open is applied before the move.  A close is applied
@@ -527,7 +661,10 @@ class LitearmRealRobot(LitearmRobot):
                 ``set_gripper`` after arriving).  ``KEEP`` changes nothing.
             pitch / yaw / roll: desired orientation, degrees; None keeps the
                 measured value.  The empty-finger half-turn rule is the same
-                as the simulated LiteArm.
+                as the simulated LiteArm. For an empty top-grasp approach,
+                explicitly use pitch=90, yaw=locate(...).grasp_yaw, roll=0.
+                A safe-home wrist posture can be at a joint limit; keeping
+                that posture during a lift can be unreachable.
             path: ``"auto"``, ``"line"`` or ``"joint"``.
         Returns:
             RealMove.  ``steps_used`` counts executed synchronous segments.
@@ -582,14 +719,179 @@ class LitearmRealRobot(LitearmRobot):
 
         return self._stateful("move_pose", kwargs, build)
 
+    def grasp_cube(
+        self,
+        center_xy: Any,
+        top_z: float,
+        support_top: float,
+        side_m: float,
+        yaw: float,
+        *,
+        pad_height_m: float,
+        arm: str = "right",
+        overlap_fraction: float = 0.65,
+        clearance_m: float = 0.003,
+        approach_m: float = 0.06,
+        lift_m: float = 0.015,
+        stable_timeout_s: float = 5.0,
+    ) -> RealGrasp:
+        """Centre and vertically pinch an upright cube, then test-lift it.
+
+        Disabled by default: the station must explicitly set
+        ``manipulation.enable_cube_grasp=true``. This development primitive
+        requires the fingertip_midpoint TCP. It never enables devices, homes,
+        retries a moved object or claims independent task success.
+
+        ``center_xy`` is the measured centre in the support plane;
+        ``top_z`` and ``support_top`` are measured local heights.
+        ``side_m`` is the cube cross-section along the closing axis.
+        ``yaw`` is that axis's heading (locate's grasp_yaw); the finger faces
+        become parallel to the opposing cube sides, with pitch=90 and roll=0.
+        ``pad_height_m`` is the verified usable contact length up from the
+        finger tips, not a collision capsule dimension.
+
+        The target engages 65% of the measured height by default, with 1 mm
+        of arrival allowance. Actual centre error must be <=2 mm, vertical
+        and face errors <=3 degrees, and engagement >=overlap_fraction>0.5
+        before closing. Support and configured tool/floor bounds still apply.
+        A clearance conflict returns failure without lowering the arm.
+
+        After closing, wait >=1 s for >=0.5 s of stable fresh width/nominal
+        force feedback, record the settled opening as the carry baseline,
+        then lift vertically 15 mm. A failed lift keeps the squeeze for
+        recovery. Results include per-stage evidence and device-action count;
+        grasped is a measured hold test, not a visual object-identity verdict.
+        """
+        from .hardware.grasp import cube_geometry
+
+        geometry = cube_geometry(
+            center_xy,
+            top_z,
+            support_top,
+            side_m,
+            yaw,
+            pad_height_m=pad_height_m,
+            overlap_fraction=overlap_fraction,
+            clearance_m=clearance_m,
+            approach_m=approach_m,
+            lift_m=lift_m,
+        )
+        kwargs = {
+            "center_xy": geometry["center_xy"],
+            "top_z": float(top_z),
+            "support_top": float(support_top),
+            "side_m": float(side_m),
+            "yaw": float(yaw),
+            "pad_height_m": float(pad_height_m),
+            "arm": _arm(arm),
+            "overlap_fraction": float(overlap_fraction),
+            "clearance_m": float(clearance_m),
+            "approach_m": float(approach_m),
+            "lift_m": float(lift_m),
+            "stable_timeout_s": float(stable_timeout_s),
+        }
+        if (
+            not math.isfinite(kwargs["stable_timeout_s"])
+            or not 1.5 <= kwargs["stable_timeout_s"] <= 10
+        ):
+            raise ValueError("stable_timeout_s must be in [1.5, 10]")
+
+        def build(p: dict[str, Any]) -> RealGrasp:
+            return RealGrasp(
+                arm=str(p.get("arm", arm)),
+                grasped=bool(p.get("grasped")),
+                failure_stage=p.get("failure_stage"),
+                note=p.get("note"),
+                target_xyz=_tuple3(p.get("target_xyz")),
+                final_xyz=_tuple3(p.get("final_xyz")),
+                overlap_fraction=p.get("overlap_fraction"),
+                baseline_opening=p.get("baseline_opening"),
+                baseline_width_m=p.get("baseline_width_m"),
+                lift_reached=bool(p.get("lift_reached")),
+                slip=bool(p.get("slip")),
+                holding=bool(p.get("holding")),
+                tcp_to_bottom=p.get("tcp_to_bottom"),
+                steps_used=int(p.get("steps_used", 0)),
+                stages=tuple(p.get("stages") or ()),
+            )
+
+        return self._stateful("grasp_cube", kwargs, build)
+
+    def stack_cube(
+        self,
+        source_prompt: str,
+        support_prompt: str,
+        *,
+        pad_height_m: float,
+        arm: str = "right",
+        camera: str = "cam_head",
+        alignment_camera: str | None = None,
+        carry_clearance_m: float = 0.03,
+        overlap_fraction: float = 0.65,
+    ) -> RealCubeStack:
+        """One fixed stacking sequence; disabled until both cube primitives are enabled.
+
+        Requires manipulation.enable_cube_stack and enable_cube_grasp. Measures
+        source and support twice BEFORE grasping. No motion is issued for
+        failed/inconsistent 3-D measurements; no table/pixel fallback is used.
+        Freezes support centre/top and the feedback-derived gripper-to-object
+        offset, lifts to safe height, carries horizontally once, verifies
+        measured and visual alignment, then descends/releases/retreats.
+        The verification reads never change the landing target. Failure keeps
+        the hold for recovery; there are no exploratory corrections or home.
+        Completion is measured execution evidence, not independent task success.
+        """
+        kwargs = {
+            "source_prompt": source_prompt,
+            "support_prompt": support_prompt,
+            "pad_height_m": float(pad_height_m),
+            "arm": _arm(arm),
+            "camera": self._resolve_camera(camera),
+            "alignment_camera": self._resolve_camera(alignment_camera)
+            if alignment_camera
+            else None,
+            "carry_clearance_m": float(carry_clearance_m),
+            "overlap_fraction": float(overlap_fraction),
+        }
+
+        def build(p: dict[str, Any]) -> RealCubeStack:
+            return RealCubeStack(
+                arm=str(p.get("arm", arm)),
+                completed=bool(p.get("completed")),
+                failure_stage=p.get("failure_stage"),
+                note=p.get("note"),
+                support_xyz=tuple(p["support_xyz"]) if p.get("support_xyz") is not None else None,
+                support_top=p.get("support_top"),
+                landing_tcp_xy=tuple(p["landing_tcp_xy"])
+                if p.get("landing_tcp_xy") is not None
+                else None,
+                held_offset_xy=tuple(p["held_offset_xy"])
+                if p.get("held_offset_xy") is not None
+                else None,
+                carry_z=p.get("carry_z"),
+                aligned=bool(p.get("aligned")),
+                placed=bool(p.get("placed")),
+                released=bool(p.get("released")),
+                safe_to_home=bool(p.get("safe_to_home")),
+                steps_used=int(p.get("steps_used", 0)),
+                stages=tuple(p.get("stages") or ()),
+                error_code=p.get("error_code"),
+            )
+
+        return self._stateful("stack_cube", kwargs, build)
+
     def set_gripper(self, arm: str, gripper: int, opening: float | None = None) -> RealGripper:
         """Open or close one LiteGrip, without moving the arms.
 
-        A close starts a persistent calibrated-force squeeze.  Repeating the
-        close while the hold is active does not restart it.  ``holding`` means
-        the measured fingers stopped apart; it does NOT prove the intended
-        object is held.  ``width_m`` is the measured finger opening, not the
-        simulator's fixed 2 mm + 85 mm formula.
+        A close starts a persistent squeeze at the station's nominal force
+        setting, not a calibrated contact-force measurement. With an existing
+        hold, repeating CLOSE normally keeps the squeeze and original carry
+        baseline. If opening fell beyond the carry threshold, a fresh close
+        may be started; read ``note``. Re-CLOSE is not a baseline refresh.
+        ``holding`` is a grasp candidate, not proof the intended object is
+        held. ``width_m`` is the measured opening, not the simulator's fixed
+        2 mm + 85 mm formula; width alone does not diagnose a top chamfer.
+        ``force_n`` is not exposed in public state or gripper results.
 
         Args:
             arm: ``"left"`` or ``"right"``.
@@ -676,9 +978,24 @@ class LitearmRealRobot(LitearmRobot):
     ) -> RealPlace:
         """Put the held object on a measured support, release, lift and retreat.
 
-        ``support_top`` and ``tcp_to_bottom`` must come from measurement or the
-        current grasp geometry; no station constant is assumed.  The gripper is
-        opened only after the measured descent arrives and is not blocked or
+        ``support_top`` is the local support's world z. ``tcp_to_bottom`` is
+        the vertical difference ``z_tcp - z_object_bottom`` in the intended
+        placement orientation, not half-height or a Euclidean distance. This
+        helper requires a positive difference; zero/negative offsets are not
+        supported and must not be replaced with an absolute value.
+
+        ``x`` and ``y`` target the TCP, not the held object's centre. For a
+        centre offset ``delta_xy = object_center_xy - tcp_xy``, use
+        ``tcp_target_xy = landing_center_xy - delta_xy``. Rotate an established
+        rigid offset or remeasure it after an orientation change. A visible
+        pixel alone does not identify object centre or bottom. Use verified
+        geometry; no station constant is assumed.
+
+        Descent preserves the current measured orientation. Establish the
+        intended held-object pose in clear space and preflight it before
+        calling. The target z is ``support_top + tcp_to_bottom + clearance``.
+        The gripper is opened only after the measured descent arrives and is
+        not blocked or
         slipping.  ``safe_to_home`` is True only when the lift and retreat both
         arrived without being blocked.  This call never homes.
         """
@@ -778,17 +1095,20 @@ class LitearmRealRobot(LitearmRobot):
             score=float(p["score"]) if p.get("score") is not None else None,
             box=p.get("box_px"),
             camera=str(p.get("camera", camera)),
+            error_code=p.get("error_code"),
+            search_roi_rc=tuple(p["search_roi_rc"]) if p.get("search_roi_rc") else None,
+            captured_at_wall_ns=p.get("captured_at_wall_ns"),
+            note=p.get("note"),
         )
 
     def back_project(self, row: int, col: int, camera: str | None = None) -> RealSeenPoint:
         """Return the measured world point seen at a pixel.
 
         Omitting ``camera`` selects ``perception.primary_camera``.  With a valid
-        depth pixel this is the deprojected surface point.  Without depth, the
-        object at the pixel is segmented and measured from calibrated views; if
-        that fails the table point is returned only when the pixel's calibrated
-        ray meets the table.  A pixel in mid-air over no calibrated surface
-        raises rather than returning a made-up point.
+        depth pixel this is the deprojected surface point. Without depth it
+        raises. Use ``locate`` with an explicit text prompt for matched views
+        or its labelled ``table_projection`` estimate; a generic object mask
+        cannot establish which surface belongs to this pixel.
         """
         camera = self._resolve_camera(camera)
         p = self._readonly("back_project", {"row": int(row), "col": int(col), "camera": camera})
@@ -802,25 +1122,48 @@ class LitearmRealRobot(LitearmRobot):
         )
 
     def locate(
-        self, text_prompt: str, camera: str | None = None, min_score: float = 0.2
+        self,
+        text_prompt: str,
+        camera: str | None = None,
+        min_score: float = 0.2,
+        *,
+        geometry_mode: str = "supported",
+        support_z_m: float | None = None,
+        object_height_m: float | None = None,
     ) -> RealObjectSight:
         """Find an object and measure it in 3D from the calibrated cameras.
 
         Omitting ``camera`` selects ``perception.primary_camera``, so a
         wrist-only station can call ``locate(prompt)`` without a head camera.
-        With depth, the mask's valid depth pixels give the top, height and
-        footprint.  Without depth, at least two calibrated views are required;
+        With depth, a robust top-plane fit gives top and a depth-only footprint
+        gives x/y. Height, centre and footprint reliability are separate in
+        ``measurement_quality``. ``rgb_footprint`` is an estimate, not the centre.
+        Two distinct consistent captures set ``geometry_confirmed``; a repeat
+        of the same frame cannot confirm geometry. The host tracks the same
+        text target within its projected geometry, including a measured-TCP
+        bound after a uniquely associated settled grasp. Failed observations
+        do not change that reference or refresh the held offset.
+        ``table_projection`` separately provides depth-free approximate x/y
+        on the calibrated table; perspective and occlusion can bias it.
+        Without depth, at least two calibrated views are required for height;
         the visual hull of their masks gives the extent.  One RGB view cannot
         determine height and returns ``measurement_failed=True`` with a note;
-        no table intersection or fixed table height is used as a substitute.
+        no fixed object height is substituted. Explicit table prompts such as
+        ``"the white tabletop"`` return the labelled calibrated support plane.
 
         Args:
             text_prompt: what to find, e.g. ``"the red block"``.
             camera: a configured camera name, or None for the primary camera.
-            min_score: SAM3 masks below this score are not found.
+            min_score: SAM3 score threshold; cannot lower the configured floor.
+            geometry_mode: supported or held. A tracked grasp selects held
+                automatically. Held geometry needs measured pregrasp height;
+                a tilted or occluded target can remain unconfirmed.
+            support_z_m: explicit support plane, otherwise the calibrated table.
+            object_height_m: measured pregrasp height for held geometry;
+                this is never inferred from the held object's table gap.
         Returns:
             RealObjectSight.  Check ``measurement_failed`` and ``views``.  With
-            ``views >= 2`` (or depth) the top/centre/footprint are measured;
+            ``views >= 2`` (or depth) an object extent is available;
             a ``note`` still describes occlusion or a rough fit.  The mask is
             not proof of identity.
         """
@@ -828,10 +1171,14 @@ class LitearmRealRobot(LitearmRobot):
         prompt = str(text_prompt)
         if not prompt.strip():
             raise ValueError("text_prompt must not be empty")
-        p = self._readonly(
-            "locate",
-            {"text_prompt": prompt, "camera": camera, "min_score": float(min_score)},
-        )
+        kwargs = {"text_prompt": prompt, "camera": camera, "min_score": float(min_score)}
+        if geometry_mode != "supported":
+            kwargs["geometry_mode"] = geometry_mode
+        if support_z_m is not None:
+            kwargs["support_z_m"] = float(support_z_m)
+        if object_height_m is not None:
+            kwargs["object_height_m"] = float(object_height_m)
+        p = self._readonly("locate", kwargs)
         centroid = p.get("centroid_rc") or ()
         failed = bool(p.get("measurement_failed", p.get("center_xyz") is None))
         note = p.get("geometry_error") or p.get("note")
@@ -855,6 +1202,18 @@ class LitearmRealRobot(LitearmRobot):
             source=str(p["source"]) if p.get("source") else None,
             measurement_failed=failed,
             measurement_quality=p.get("measurement_quality"),
+            table_projection=p.get("table_projection"),
+            within_table_bounds=p.get("within_table_bounds"),
+            footprint_within_table_bounds=p.get("footprint_within_table_bounds"),
+            bounds_error=p.get("bounds_error"),
+            geometry_confirmed=bool(p.get("geometry_confirmed")),
+            error_code=p.get("error_code"),
+            captured_at_wall_ns=p.get("captured_at_wall_ns"),
+            geometry_mode=str(p.get("geometry_mode", geometry_mode)),
+            search_roi_rc=tuple(p["search_roi_rc"]) if p.get("search_roi_rc") else None,
+            rgb_footprint=p.get("rgb_footprint"),
+            tracking=p.get("tracking"),
+            partial_measurement=p.get("partial_measurement"),
         )
 
 

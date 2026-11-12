@@ -109,6 +109,26 @@ def test_rotation_and_joint_map_validation(tmp_path):
         load_station(path)
 
 
+def test_tool_table_modes_are_explicit_and_geometry_remains_default(tmp_path):
+    assert (
+        load_station(EXAMPLE).calibration.arm("left").tool_collision.table_check_mode == "geometry"
+    )
+    cfg = load_station(ROOT / "tests/data/stations/litearm_single_right.table-plane.json")
+    assert cfg.calibration.table.z_m == cfg.calibration.table.z_floor_m == 0.125
+    tool = cfg.calibration.arm("right").tool_collision
+    assert tool.table_check_mode == "tcp_plane" and tool.table_margin_m == 0.002
+    assert tool.body_radius_m == 0.035  # Other collision checks retain actual model geometry.
+    cal = _calibration()
+    cal["arms"]["left"]["tool_collision"]["table_check_mode"] = "none"
+    path = _write_case(tmp_path / "mode", calibration=cal)
+    with pytest.raises(ConfigError, match="table_check_mode"):
+        load_station(path)
+    cal["arms"]["left"]["tool_collision"].update(table_check_mode="tcp_plane", table_margin_m=-0.01)
+    path = _write_case(tmp_path / "margin", calibration=cal)
+    with pytest.raises(ConfigError, match="table_margin_m"):
+        load_station(path)
+
+
 def test_limits_and_home_must_be_consistent(tmp_path):
     cal = _calibration()
     cal["arms"]["left"]["joint_limits_rad"][0] = [0.5, 0.4]

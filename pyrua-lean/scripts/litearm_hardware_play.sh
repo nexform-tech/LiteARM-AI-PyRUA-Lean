@@ -6,20 +6,26 @@
 #   LITEARM_HW_MODE=offline-fake \
 #   scripts/litearm_hardware_play.sh
 #
-# Modes are explicit: read-only (default), offline-fake or live.  The output
+# Modes come from the explicit station profile unless LITEARM_HW_MODE overrides
+# them. The default station selector is configs/litearm_real.json. The output
 # directory is unique per invocation and is never reused.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CONFIG="${LITEARM_HW_CONFIG:?set LITEARM_HW_CONFIG to an absolute station JSON}"
+CONFIG="${LITEARM_HW_CONFIG:-${ROOT}/configs/litearm_real.json}"
 INSTRUCTION="${LITEARM_HW_INSTRUCTION:?set LITEARM_HW_INSTRUCTION}"
 if [[ "${CONFIG}" != /* ]]; then
   echo "LITEARM_HW_CONFIG must be absolute: ${CONFIG}" >&2
   exit 2
 fi
-MODE="${LITEARM_HW_MODE:-read-only}"
+if [[ ! -f "${CONFIG}" ]]; then
+  echo "station config not found: ${CONFIG}" >&2
+  echo "copy configs/litearm_real.example.json to configs/litearm_real.json and fill it in" >&2
+  exit 2
+fi
+MODE="${LITEARM_HW_MODE:-}"
 case "${MODE}" in
-  read-only|offline-fake|live) ;;
+  ""|read-only|offline-fake|live) ;;
   *) echo "LITEARM_HW_MODE must be read-only, offline-fake or live" >&2; exit 2 ;;
 esac
 ENV_NAME="${LITEARM_HW_AGENT_ENV:-pyrualean-hw-agent}"
@@ -35,6 +41,7 @@ if [[ -e "${OUT}" ]]; then
 fi
 mkdir -p "${BASE_OUT}"
 cd "${ROOT}"
+export PYTHONPATH="${ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
 args=(
   pyrualean play
   --robot litearm_real
@@ -42,10 +49,12 @@ args=(
   --primitives no-vla
   --hardware-config "${CONFIG}"
   --instruction "${INSTRUCTION}"
-  --execution-mode "${MODE}"
   --task "${TASK_ID}"
   --budget-s "${BUDGET}"
   --max-episode-steps "${MAX_STEPS}"
   --out "${OUT}"
 )
+if [[ -n "${MODE}" ]]; then
+  args+=(--execution-mode "${MODE}")
+fi
 exec conda run --no-capture-output -n "${ENV_NAME}" "${args[@]}"

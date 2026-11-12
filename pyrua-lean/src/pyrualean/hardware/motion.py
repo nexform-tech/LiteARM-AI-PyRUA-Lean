@@ -150,6 +150,9 @@ def move_pose(
     yaw: float | None = None,
     roll: float | None = None,
     path: str = "auto",
+    *,
+    _half_turn: bool | None = None,
+    _validate_plan: Any = None,
 ) -> dict[str, Any]:
     arm = _arm(arm)
     _require_active(toolkit, arm)
@@ -206,7 +209,7 @@ def move_pose(
             yaw=angles_arg[1],
             roll=angles_arg[2],
             path=path,
-            half_turn=not holding_for_plan,
+            half_turn=not holding_for_plan if _half_turn is None else _half_turn,
             other_arm=other,
             other_q=other_q,
             holding=holding_for_plan,
@@ -214,7 +217,49 @@ def move_pose(
     except PlanningError as exc:
         result["ik_error"] = str(exc)
         result["note"] = (exc.detail or {}).get("why")
+        if "tool_table_constraint" in exc.detail:
+            constraint = exc.detail["tool_table_constraint"]
+            model = (
+                "TCP table-plane check"
+                if constraint["source"] == "tcp_table_plane"
+                else "tool-body capsule"
+            )
+            result["note"] = (
+                f"Configured {model} requires TCP z >= {constraint['tcp_min_z_m']:.4f} "
+                "m over the table for this orientation. Use check_move on nearby heights "
+                "a few mm apart before choosing the descent; the threshold alone does not "
+                "prove reachability or object contact."
+            )
+        elif exc.detail.get("path") == "line":
+            result["note"] = (
+                "Straight-path planning failed; repeating line from the same pose is unlikely "
+                "to help. Use check_move on the same target with path='auto' to inspect a "
+                "joint swing, or choose another pregrasp pose. Movable objects are not in "
+                "the fixed collision model; verify swing clearance before executing."
+            )
+        measured_rotation = np.asarray(obs.arm(arm).tcp_pose).reshape(4, 4)[:3, :3]
+        measured_angles = angles(measured_rotation)
+        requested_rotation = (
+            measured_rotation
+            if all(value is None for value in angles_arg)
+            else orientation(
+                *(
+                    current if value is None else value
+                    for current, value in zip(measured_angles, angles_arg, strict=True)
+                )
+            )
+        )
+        if not holding_for_plan and rotation_error(measured_rotation, requested_rotation) < 1.0:
+            guidance = (
+                "This request preserved the measured wrist orientation (including explicitly "
+                "copied state angles). Copying those angles retries the same posture. For an empty "
+                "top-grasp approach, explicitly set pitch=90, yaw=locate(...).grasp_yaw, "
+                "roll=0; re-plan from fresh state. A line refusal executes no motion."
+            )
+            result["note"] = "; ".join(note for note in (result["note"], guidance) if note)
         return result
+    if _validate_plan is not None:
+        _validate_plan(planned, obs)
     payload = {
         "arm": arm,
         "q_start": [float(v) for v in obs.arm(arm).q_model],
@@ -266,6 +311,16 @@ def move_pose(
         result["blocked"] = bool(
             not apply.get("reached", True) or float(apply.get("max_joint_error_rad", 0.0)) > 0.02
         )
+        if result["blocked"]:
+            joint_error = float(apply.get("max_joint_error_rad", math.nan))
+            arrival_bound = toolkit.config.execution.settle_tolerance_rad
+            following = (
+                f"Measured joint arrival error {joint_error:.4f} "
+                f"rad exceeds the service bound {arrival_bound:.4f} "
+                "rad. This does not establish table/object contact; inspect the measured pose "
+                "and clearance before another descent."
+            )
+            result["note"] = "; ".join(note for note in (result["note"], following) if note)
     if (
         command == -1
         or result["slip"]
@@ -371,6 +426,8 @@ def grip(
         toolkit.held_openings[arm] = float(measured.gripper_opening)
     else:
         toolkit.held_openings.pop(arm, None)
+    if hasattr(toolkit, "sync_target_holds"):
+        toolkit.sync_target_holds(after, allow_bind=base["settled"])
     if after.fault:
         base["note"] = (base["note"] or "") + f"; hardware fault: {after.fault}"
     return base

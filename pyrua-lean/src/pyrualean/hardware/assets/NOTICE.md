@@ -8,7 +8,7 @@ It is not read from a RoboDojo asset directory at runtime.
 - Source: `https://github.com/nexform-tech/litearm-description`
 - Path: `SE/litearm_description/urdf/litearm_description.urdf`
 - Commit used for verification: `b8cc7d9` (local checkout at
-  `/home/hzh/Code/NEXTFORM/IsaacSim/litearm-description`)
+  `~/Code/NEXTFORM/IsaacSim/litearm-description`)
 - Package version: `1.0.0`
 - License: BSD (declared in `SE/litearm_description/package.xml`)
 

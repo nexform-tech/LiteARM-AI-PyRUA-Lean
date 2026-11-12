@@ -22,9 +22,9 @@ field:
   flags and a data age; each gripper carries measured width, force, freshness
   and its last command separately.
 
-The world frame is the one the station calibration defines: origin at the
-centre of the table edge nearest the robots, +x right, +y into the table, +z
-up, table surface ``z = 0``.  Quaternions are ``[w, x, y, z]``.
+The station calibration defines the world frame and table height; the table
+need not be at z = 0. Quaternions are ``[w, x, y, z]``. TCP is the configured
+control point, which may be the grasp centre or the fingertip midpoint.
 """
 
 from __future__ import annotations
@@ -37,6 +37,7 @@ from typing import Any
 
 import numpy as np
 
+from .camera_geometry import CAMERA_FRAME, station_transform
 from .config import Calibration
 from .kinematics import LitearmKinematics, angles, quat_wxyz
 
@@ -137,6 +138,7 @@ class CameraMeasurement:
             "intrinsic_matrix": _matrix_rows(self.intrinsic, 3, 3),
             "extrinsic_matrix": _matrix_rows(self.camera_to_world, 4, 4),
             "camera_to_world": _matrix_rows(self.camera_to_world, 4, 4),
+            "camera_frame": CAMERA_FRAME,
             "distortion_coefficients": list(self.distortion),
             "color_artifact": self.color_artifact,
             "depth_artifact": self.depth_artifact,
@@ -417,6 +419,7 @@ def build_observation(
             c2w = kinematics.camera_pose(name, arm, _vec(q_at, f"cameras.{name}.q", 7))
         if c2w is None:
             raise StateError(f"camera {name} has no camera-to-world transform")
+        c2w = station_transform(c2w, raw.get("camera_frame", CAMERA_FRAME))
         cameras[name] = CameraMeasurement(
             name=name,
             camera_to_world=tuple(float(v) for v in np.asarray(c2w, dtype=float).reshape(-1)),

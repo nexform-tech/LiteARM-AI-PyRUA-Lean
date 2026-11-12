@@ -13,8 +13,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT="${ROOT}/wheelhouse"
-LITEARM_SRC="${LITEARM_SDK_SRC:-/home/hzh/Code/litearm-python}"
-LITEGRIP_SRC="${LITEGRIP_SDK_SRC:-/home/hzh/Code/NEXTFORM/litegrip-python}"
+LITEARM_SRC="${LITEARM_SDK_SRC:-~/Code/litearm-python}"
+LITEGRIP_SRC="${LITEGRIP_SDK_SRC:-~/Code/NEXTFORM/litegrip-python}"
 
 if [[ ! -d "${LITEARM_SRC}/src/litearm" ]]; then
   echo "litearm-python source not found: ${LITEARM_SRC}" >&2

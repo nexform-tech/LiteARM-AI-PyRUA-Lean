@@ -466,7 +466,9 @@ class HardwareDaemon:
             }
 
     def _heartbeat(self, message: dict[str, Any]) -> dict[str, Any]:
-        self._check_session(message, allow_read_only=True)
+        # Cancellation stops motion, not the readback session. A heartbeat may
+        # race with wait_command/status while the caller collects stop evidence.
+        self._check_session(message, allow_read_only=True, allow_stopped=True)
         self.last_heartbeat_mono = now_monotonic_ns()
         return {"state": self.state.value, "time": now_wall_ns()}
 
@@ -612,6 +614,7 @@ class HardwareDaemon:
                     )
                 intrinsic = frame.intrinsic if frame.intrinsic is not None else cam_cal.intrinsic
                 cameras[name] = {
+                    "camera_frame": cam_cal.camera_frame,
                     "shape": [int(frame.rgb.shape[0]), int(frame.rgb.shape[1]), 3],
                     "intrinsic_matrix": [[float(v) for v in row] for row in np.asarray(intrinsic)],
                     "distortion_coefficients": list(frame.distortion),
@@ -786,7 +789,10 @@ class HardwareDaemon:
         self._check_session(message, allow_read_only=True, allow_fault=True, allow_stopped=True)
         with self._lock:
             command = self.current
-            if command is not None and not command.done.is_set():
+            running = command is not None and not command.done.is_set()
+            state_before = self.state
+            faulted_before = self.state is SessionState.FAULT
+            if running:
                 command.cancel.set()
         if command is not None and not command.done.wait(
             self.config.execution.command_timeout_s + 2.0
@@ -807,8 +813,20 @@ class HardwareDaemon:
             self.session_id = None
             self.session_client = None
             self.session_conn = None
+            # A clean close (no command was running and the session was ready)
+            # leaves the service re-armable for the next runner.  An interrupted
+            # motion or a fault keeps the STOPPED/FAULT latch and requires an
+            # operator restart.
+            clean = (
+                state_before in (SessionState.READY, SessionState.READ_ONLY)
+                and not running
+                and not faulted_before
+                and not faulted
+            )
             self.state = (
-                SessionState.FAULT if self.state is SessionState.FAULT else SessionState.STOPPED
+                SessionState.FAULT
+                if faulted
+                else (SessionState.READY if clean else SessionState.STOPPED)
             )
         return {
             "state": self.state.value,

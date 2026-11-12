@@ -97,8 +97,9 @@ LiteArm 资产；`--skip-sam3` 让该主机不下载检查点。
 
 ## 真机
 
-`pyrua-lean/src/pyrualean/hardware/` 可直接运行经过标定的 LiteArm / LiteGrip 工作站：设备侧服务持有机械臂、夹爪和
-相机，agent 侧适配器暴露同一套 `robo` API。该路径不导入或启动 RoboDojo，也不需要 Isaac Sim。
+`pyrua-lean/src/pyrualean/hardware/` 可直接运行经过标定的 LiteArm / LiteGrip
+工作站：设备侧服务持有机械臂、夹爪和 相机，agent 侧适配器暴露同一套 `robo` API。该路径不导入或启动 RoboDojo，也不需要 Isaac
+Sim。
 
 ```bash
 # 设备主机：服务独占硬件，默认 read-only
@@ -115,8 +116,8 @@ LITEARM_HW_INSTRUCTION='stack the blocks' \
 
 把 `pyrua-lean/configs/litearm_real.example.json` 和
 `pyrua-lean/configs/calibration/litearm_real.example.json` 复制成本地、被 git 忽略的文件，并在
-`execution.mode=live` 前完成工作站测量。站点格式、SDK 版本、服务协议和安全规则见
-[LiteArm Real](pyrua-lean/docs/robots/litearm-real.md)。真机路径没有任务成功判定器，也不会写入 RoboDojo 结果。
+`execution.mode=live` 前完成工作站测量。站点格式、SDK 版本、服务协议和安全规则见 [LiteArm
+Real](pyrua-lean/docs/robots/litearm-real.md)。真机路径没有任务成功判定器，也不会写入 RoboDojo 结果。
 
 ## 文档
 

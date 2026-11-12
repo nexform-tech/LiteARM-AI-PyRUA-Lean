@@ -33,6 +33,7 @@ import numpy as np
 from .config import Calibration, ExecutionConfig, SafetyConfig
 from .kinematics import (
     ARM_NAMES,
+    MEASURED_LIMIT_TOL_RAD,
     CollisionModel,
     LitearmKinematics,
     angles,
@@ -95,15 +96,38 @@ def _target_pose(
 
 
 def _followable(
-    q_start: Sequence[float], waypoints: Sequence[Sequence[float]], step_rad: float
+    q_start: Sequence[float],
+    waypoints: Sequence[Sequence[float]],
+    step_rad: float,
+    *,
+    joint_limits_rad: Sequence[Sequence[float]],
 ) -> list[tuple[float, ...]]:
+    """Subdivide from measured start, keeping every command inside exact limits.
+
+    A readback just outside a limit remains the measured start. Interpolation
+    must not copy that noise into a command, even when IK keeps that joint at
+    its limit. Only interpolated samples are projected; invalid IK/home targets
+    and starts beyond the observation tolerance are refused.
+    """
     out: list[tuple[float, ...]] = []
     prev = np.asarray(q_start, dtype=float)
+    limits = np.asarray(joint_limits_rad, dtype=float)
+    if prev.shape != (7,) or not np.all(np.isfinite(prev)):
+        raise PlanningError("q_start is not a finite 7-vector")
+    if np.any(prev < limits[:, 0] - MEASURED_LIMIT_TOL_RAD) or np.any(
+        prev > limits[:, 1] + MEASURED_LIMIT_TOL_RAD
+    ):
+        raise PlanningError("q_start is outside the calibrated joint limits")
     for way in waypoints:
         target = np.asarray(way, dtype=float)
+        if target.shape != (7,) or not np.all(np.isfinite(target)):
+            raise PlanningError("trajectory target is not a finite 7-vector")
+        if np.any(target < limits[:, 0]) or np.any(target > limits[:, 1]):
+            raise PlanningError("trajectory target is outside the calibrated joint limits")
         count = max(1, int(math.ceil(float(np.max(np.abs(target - prev))) / step_rad)))
         for i in range(1, count + 1):
-            out.append(tuple(float(v) for v in prev + (target - prev) * (i / count)))
+            sample = np.clip(prev + (target - prev) * (i / count), limits[:, 0], limits[:, 1])
+            out.append(tuple(float(v) for v in sample))
         prev = target
     return out
 
@@ -151,8 +175,14 @@ class Planner:
             errors.append("q_start is not a finite 7-vector")
             return errors
         limits = np.asarray(cal.joint_limits_rad)
-        if np.any(prev < limits[:, 0] - 1e-9) or np.any(prev > limits[:, 1] + 1e-9):
+        if np.any(prev < limits[:, 0] - MEASURED_LIMIT_TOL_RAD) or np.any(
+            prev > limits[:, 1] + MEASURED_LIMIT_TOL_RAD
+        ):
             errors.append("q_start is outside the calibrated joint limits")
+            return errors
+        floor_bad = self.collision.z_floor_violations(arm, prev)
+        if floor_bad:
+            errors.append(f"q_start violates the hard table floor: {'; '.join(floor_bad)}")
         max_step = (
             self.execution.max_joint_step_rad
             if max_joint_step_rad is None
@@ -165,15 +195,31 @@ class Planner:
                 return errors
             if np.any(q < limits[:, 0] - 1e-9) or np.any(q > limits[:, 1] + 1e-9):
                 errors.append(f"waypoint {index} is outside the calibrated joint limits")
+                return errors
             if float(np.max(np.abs(q - prev))) > max_step + 1e-6:
                 errors.append(
                     f"waypoint {index} moves a joint by "
                     f"{float(np.max(np.abs(q - prev))):.4f} rad, over {max_step:.4f}"
                 )
+            floor_bad = self.collision.z_floor_violations(arm, q)
+            if floor_bad:
+                errors.append(
+                    f"waypoint {index} violates the hard table floor: {'; '.join(floor_bad)}"
+                )
             if not self._collision_free(arm, q, other_arm=other_arm, other_q=other_q):
                 errors.append(
                     f"waypoint {index} collides with the table, an obstacle or the other arm"
                 )
+            # The hard floor is cheap (FK only) and the joint-space sweep is not
+            # straight in Cartesian space, so sample it densely.
+            for t in np.linspace(0.05, 0.95, 19):
+                mid = prev + (q - prev) * float(t)
+                floor_bad = self.collision.z_floor_violations(arm, mid)
+                if floor_bad:
+                    errors.append(
+                        f"segment {index} violates the hard table floor: {'; '.join(floor_bad)}"
+                    )
+                    break
             # Sample the joint-space segment too; a primitive collision model can
             # miss a light graze between two waypoints.
             for t in (0.25, 0.5, 0.75):
@@ -303,7 +349,12 @@ class Planner:
             float(cr if roll is None else roll),
         )
         target = _target_pose(current[:3, :3], xyz, want)
-        flipped = _target_pose(current[:3, :3], xyz, (want[0], want[1], want[2] + 180.0))
+        if pitch is None and yaw is None and roll is None:
+            # Near vertical, the display angles canonicalize roll to zero.
+            # Preserve the measured matrix, not that lossy display round trip.
+            target[:3, :3] = current[:3, :3]
+        flipped = target.copy()
+        flipped[:3, 1:3] *= -1.0
         candidates = [target]
         if half_turn and not holding:
             candidates.append(flipped)
@@ -313,14 +364,30 @@ class Planner:
             try:
                 options.append(self._plan_one(arm, q_start, candidate, path, step_rad=step_rad))
             except PlanningError as exc:
-                if first_error is None or "out of reach" in str(exc):
+                # Do not overwrite a reachable target's line/collision refusal
+                # with an unreachable half-turn's error. For two IK misses,
+                # report the closer one rather than the last attempted pose.
+                if first_error is None:
                     first_error = exc
+                elif "pos_err_m" in first_error.detail:
+                    if "pos_err_m" not in exc.detail or (
+                        exc.detail["pos_err_m"] + 0.1 * math.radians(exc.detail["rot_err_deg"])
+                        < first_error.detail["pos_err_m"]
+                        + 0.1 * math.radians(first_error.detail["rot_err_deg"])
+                    ):
+                        first_error = exc
         if not options:
             assert first_error is not None
             raise first_error
         # Prefer exact solutions; among them the shortest joint travel.
-        options.sort(key=lambda item: (item[1], item[2]))
-        _, travel, plan, goal, taken = options[0]
+        options.sort(
+            key=lambda item: (
+                float(np.linalg.norm(item[3][:3, 3] - item[0][:3, 3])) > 1e-6
+                or rotation_error(item[3][:3, :3], item[0][:3, :3]) > 1e-3,
+                item[1],
+            )
+        )
+        selected_target, travel, plan, goal, taken = options[0]
         _ = travel
         errors = self.validate_waypoints(
             arm,
@@ -335,13 +402,13 @@ class Planner:
         self.validate_tcp_speed(arm, q_start, plan)
         note = None
         target_dist = float(np.linalg.norm(np.asarray(goal[:3, 3]) - np.asarray(xyz)))
-        target_turn = rotation_error(goal[:3, :3], target[:3, :3])
+        target_turn = rotation_error(goal[:3, :3], selected_target[:3, :3])
         if target_dist > 1e-6 or target_turn > 1e-3:
             note = (
                 f"the exact pose is out of reach; went to the closest one, "
                 f"{target_dist:.3f} m and {target_turn:.0f} deg from it"
             )
-        if goal is not target and half_turn and not holding:
+        if selected_target is flipped and half_turn and not holding:
             half = (
                 "took the pose turned half a turn about the pointing direction "
                 "(the empty fingers are interchangeable): yaw / roll read 180 off"
@@ -384,7 +451,17 @@ class Planner:
                 detail={"pos_err_m": res.pos_err_m, "rot_err_deg": res.rot_err_deg},
             )
         if res.collides:
-            raise PlanningError("every solution puts part of the arm into the table or an obstacle")
+            violations = self.collision.self_violations(arm, res.q)
+            detail = {"violations": violations}
+            if f"{arm}_tool_body" in violations or f"{arm}_tcp_table_plane" in violations:
+                detail["tool_table_constraint"] = self.collision.tool_table_constraint(
+                    arm, target[:3, :3]
+                )
+            raise PlanningError(
+                "every solution puts part of the arm into the table or an obstacle: "
+                + "; ".join(violations),
+                detail=detail,
+            )
         goal = target
         if not res.ok:
             goal = self.kinematics.fk(arm, res.q)
@@ -417,7 +494,9 @@ class Planner:
         if not ways:
             raise PlanningError("no path to the target")
         step = self.execution.max_joint_step_rad if step_rad is None else float(step_rad)
-        followable = _followable(q_start, ways, max(0.005, step))
+        followable = _followable(
+            q_start, ways, max(0.005, step), joint_limits_rad=cal.joint_limits_rad
+        )
         # The last point must be the exact IK solution, not a rounding artefact.
         followable[-1] = tuple(float(v) for v in ways[-1])
         travel = float(np.sum(np.abs(np.asarray(res.q) - np.asarray(q_start, dtype=float))))
@@ -464,6 +543,7 @@ class Planner:
                 lifted_q,
                 [cal.safe_home_rad],
                 self.execution.max_joint_step_rad,
+                joint_limits_rad=cal.joint_limits_rad,
             )
             waypoints = list(line) + joint_ways
             if self._joint_path_clear(arm, q_start, lifted_q) and self._joint_path_clear(

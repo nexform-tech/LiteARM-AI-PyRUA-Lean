@@ -29,7 +29,58 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .config import ARMS, CAMERAS, ConfigError, load_calibration
+import numpy as np
+
+from .config import ARMS, CAMERAS, Calibration, ConfigError, load_calibration
+
+
+def retarget_tcp(
+    calibration: Calibration, arm: str, offset_m: float, *, measured: bool = False
+) -> dict[str, Any]:
+    """Move TCP along its pointing axis without moving camera/collision frames.
+
+    The offset is from the current TCP to the new finger-end midpoint, in
+    metres along local +x. An estimated offset produces a non-executable
+    candidate. A measured offset retains the source's executable status.
+    """
+    offset_m = float(offset_m)
+    if not np.isfinite(offset_m) or not 0.0 < offset_m <= 0.3:
+        raise ConfigError("TCP forward offset must be finite and in (0, 0.3] m")
+    source = calibration.arm(arm)
+    if offset_m > source.tool_collision.tip_offset_m:
+        raise ConfigError(
+            "TCP shift exceeds the finger envelope; measured tool geometry is required"
+        )
+    raw = copy.deepcopy(dict(calibration.raw))
+    shift = np.eye(4)
+    shift[0, 3] = offset_m
+    new_tcp = source.flange_to_tcp @ shift
+    item = raw["arms"][arm]
+    item["flange_to_tcp"] = new_tcp.tolist()
+    item["tcp_reference"] = "fingertip_midpoint"
+    item["tcp_retarget"] = {
+        "old_tcp_to_new_tcp_m": [offset_m, 0.0, 0.0],
+        "measurement_status": "measured" if measured else "candidate_unverified",
+    }
+    tool = item.setdefault("tool_collision", {})
+    # Re-express the same collision envelope about the new origin. In
+    # particular, do not extend the body capsule to the fingertip TCP.
+    tool["body_end_offset_m"] = source.tool_collision.body_end_offset_m - offset_m
+    tool["body_length_m"] = source.tool_collision.body_length_m + offset_m
+    tool["tip_offset_m"] = source.tool_collision.tip_offset_m - offset_m
+    for name, camera in calibration.cameras.items():
+        if camera.mount == "tool" and camera.arm == arm:
+            raw["cameras"][name]["camera_to_tool"] = (
+                np.linalg.inv(shift) @ camera.transform
+            ).tolist()
+            raw["cameras"][name]["camera_frame"] = "opengl"
+    stamp = "measured" if measured else "unverified candidate"
+    raw["source"] = f"{calibration.source} | TCP +x shift {offset_m:.6f} m ({stamp})"
+    raw.setdefault("quality", {})["tcp_retarget"] = stamp
+    raw["calibration_version"] = f"{calibration.version}-fingertip-{offset_m * 1000:g}mm"
+    if not measured:
+        raw["executable"] = False
+    return raw
 
 
 def _read(path: Path) -> dict[str, Any]:

@@ -77,6 +77,13 @@ class _StubBackend:
                 "extrinsic_matrix": [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]],
                 "step": 7,
             }
+        if name == "check_move":
+            return {
+                "feasible": True,
+                "device_actions": 0,
+                "planned_xyz": input_dict["xyz"],
+                "path": input_dict["path"],
+            }
         if name == "move_pose":
             payload = {
                 "arm": "left",
@@ -237,7 +244,11 @@ def test_api_reference_and_knowledge_reflect_real_limits():
     assert "environment_success_known = false" in knowledge
     assert "no independent task-success evaluator" in knowledge
     assert "2 mm + 85 mm" in knowledge  # explicitly rejected
-    assert "z = 0" in knowledge
+    assert "Read the table top's `z` from the task card" in knowledge
+    assert "table_projection" in knowledge
+    assert "roll=0" in knowledge
+    assert "check_move" in reference
+    assert "check_move" not in LitearmRealRobot.STATEFUL_TOOLS
 
 
 def test_state_and_result_conversion_from_measured_envelope():
@@ -268,6 +279,34 @@ def test_state_and_result_conversion_from_measured_envelope():
     assert isinstance(point, RealSeenPoint) and point.surface == "object"
     meta = robo.camera_meta("cam_head")
     assert meta["shape"] == [480, 640, 3] and meta["step"] == 7
+
+
+def test_check_move_api_is_readonly_and_validates_orientation():
+    robo = LitearmRealRobot(_StubBackend())
+    result = robo.check_move([-0.03, 0.43, 0.170], pitch=90, yaw=14.4, roll=0, path="auto")
+    assert result["feasible"] and result["device_actions"] == 0
+    assert result["planned_xyz"] == [-0.03, 0.43, 0.170]
+    with pytest.raises(ValueError, match="finite"):
+        robo.check_move([0, 0, 0.2], pitch=float("nan"))
+
+
+def test_outside_measurement_bounds_are_exposed_without_measurement_failure():
+    class BoundsBackend(_StubBackend):
+        def execute_tool(self, name, input_dict):
+            result = super().execute_tool(name, input_dict)
+            if name == "locate":
+                result.update(
+                    within_table_bounds=False,
+                    footprint_within_table_bounds=False,
+                    bounds_error="outside_calibrated_table",
+                )
+            return result
+
+    sight = LitearmRealRobot(BoundsBackend()).locate("red block")
+    assert not sight.measurement_failed and sight.center_xyz is not None
+    assert sight.within_table_bounds is False
+    assert sight.footprint_within_table_bounds is False
+    assert sight.bounds_error == "outside_calibrated_table"
 
 
 class _PrimaryCameraBackend(_StubBackend):

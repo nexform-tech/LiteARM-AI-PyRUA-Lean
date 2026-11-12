@@ -1,0 +1,310 @@
+{
+  "schema_version": 1,
+  "station_id": "litearm-single-right-safety-test",
+  "calibration_version": "single-right-tcp-table-plane-20261110",
+  "executable": true,
+  "source": "Derived from single-right-safety-test calibration; table z=0.125 m per operator on 2026-11-10; TCP-only tool/table check; physical finger contact unverified.",
+  "created_at": "2026-11-09T16:08:17+08:00",
+  "quality": {
+    "status": "operator-table-plane-profile",
+    "notes": "Tool/table and hard-floor checks use TCP only. Body/finger table clearance is not modelled in this profile. Joint limits, arm-link/table, self/other-arm checks remain. Base, TCP and camera extrinsics retained from the source calibration."
+  },
+  "world": {
+    "origin": "LiteArm base frame; no external world origin measured",
+    "axes": "+x right, +y forward, +z up in the arm base frame",
+    "units": "m, rad"
+  },
+  "arms": {
+    "right": {
+      "base_pose": [
+        [
+          1.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          1.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "flange_to_tcp": [
+        [
+          6.123233995736766e-17,
+          1.0,
+          -6.123233995736766e-17,
+          0.0
+        ],
+        [
+          0.0,
+          6.123233995736766e-17,
+          1.0,
+          0.0
+        ],
+        [
+          1.0,
+          -6.123233995736766e-17,
+          3.749399456654644e-33,
+          0.1306
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "joint_map": [
+        {
+          "model_joint": 0,
+          "sdk_index": 0,
+          "sign": 1.0,
+          "offset_rad": 0.0
+        },
+        {
+          "model_joint": 1,
+          "sdk_index": 1,
+          "sign": 1.0,
+          "offset_rad": 0.0
+        },
+        {
+          "model_joint": 2,
+          "sdk_index": 2,
+          "sign": 1.0,
+          "offset_rad": 0.0
+        },
+        {
+          "model_joint": 3,
+          "sdk_index": 3,
+          "sign": 1.0,
+          "offset_rad": 0.0
+        },
+        {
+          "model_joint": 4,
+          "sdk_index": 4,
+          "sign": 1.0,
+          "offset_rad": 0.0
+        },
+        {
+          "model_joint": 5,
+          "sdk_index": 5,
+          "sign": 1.0,
+          "offset_rad": 0.0
+        },
+        {
+          "model_joint": 6,
+          "sdk_index": 6,
+          "sign": 1.0,
+          "offset_rad": 0.0
+        }
+      ],
+      "joint_limits_rad": [
+        [
+          -2.809546947479248,
+          2.809546947479248
+        ],
+        [
+          -1.7275470495224,
+          1.7275470495224
+        ],
+        [
+          -2.809546947479248,
+          2.809546947479248
+        ],
+        [
+          -3.071547031402588,
+          0.01754700019955635
+        ],
+        [
+          -2.809546947479248,
+          2.809546947479248
+        ],
+        [
+          -1.5535470247268677,
+          1.5535470247268677
+        ],
+        [
+          -1.5535470247268677,
+          1.5535470247268677
+        ]
+      ],
+      "safe_home_rad": [
+        0.24294090270996094,
+        0.7280559539794922,
+        -0.3606853485107422,
+        -0.7532234191894531,
+        -1.200312614440918,
+        -1.550889015197754,
+        1.436446189880371
+      ],
+      "gripper": {
+        "closed_m": 0.001508,
+        "open_m": 0.08696,
+        "force_n": 15.0,
+        "min_holding_m": 0.003,
+        "max_closing_speed_m_s": 0.05
+      },
+      "tool_collision": {
+        "body_length_m": 0.1306,
+        "body_radius_m": 0.035,
+        "tip_offset_m": 0.046,
+        "finger_half_width_m": 0.003,
+        "finger_half_thickness_m": 0.0305,
+        "table_check_mode": "tcp_plane",
+        "table_margin_m": 0.002
+      },
+      "link_radii_m": [
+        0.045,
+        0.05,
+        0.045,
+        0.04,
+        0.04,
+        0.035,
+        0.03
+      ]
+    }
+  },
+  "cameras": {
+    "cam_head": {
+      "mount": "world",
+      "camera_to_world": [
+        [
+          -0.9947769755061309,
+          0.05037002068350502,
+          -0.08877854481358552,
+          -0.008222591478850131
+        ],
+        [
+          -0.0865319399085829,
+          -0.8774741193054685,
+          0.4717535302726945,
+          0.8090050287388582
+        ],
+        [
+          -0.05413864034616989,
+          0.4769717297339917,
+          0.8772496660905789,
+          0.9513842313271446
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "intrinsic_matrix": [
+        [
+          607.0194091796875,
+          0.0,
+          323.3750915527344
+        ],
+        [
+          0.0,
+          606.4129638671875,
+          255.79656982421875
+        ],
+        [
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "distortion_coefficients": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "resolution": [
+        480,
+        640
+      ],
+      "has_depth": true
+    },
+    "cam_right_wrist": {
+      "mount": "tool",
+      "arm": "right",
+      "camera_to_tool": [
+        [
+          -0.045037058719719573,
+          -0.7920790982342345,
+          -0.6087547662912536,
+          -0.0389806891195595
+        ],
+        [
+          0.0064615292498695995,
+          0.6091293697553564,
+          -0.7930445507921959,
+          -0.1273671253932852
+        ],
+        [
+          0.9989644197776163,
+          -0.0396498807297702,
+          -0.022315352932126893,
+          -0.02190407382552442
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "intrinsic_matrix": [
+        [
+          606.9144287109375,
+          0.0,
+          325.23602294921875
+        ],
+        [
+          0.0,
+          606.716796875,
+          246.98541259765625
+        ],
+        [
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "distortion_coefficients": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "resolution": [
+        480,
+        640
+      ],
+      "has_depth": false
+    }
+  },
+  "table": {
+    "z_m": 0.125,
+    "x_min_m": -0.365,
+    "x_max_m": 0.235,
+    "y_min_m": 0.43,
+    "y_max_m": 0.85,
+    "edge_margin_m": 0.02,
+    "z_floor_m": 0.125
+  },
+  "obstacles": []
+}
