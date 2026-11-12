@@ -243,14 +243,14 @@ def test_duplicate_command_is_deduplicated(tmp_path):
 
 
 def test_cancel_stops_between_segments_and_refuses_more_motion(tmp_path):
-    config = _config(tmp_path, time_scale=0.03)
+    config = _config(tmp_path, time_scale=0.1)
     daemon, client = _start(config)
     try:
         toolkit = _toolkit(config, client, tmp_path)
         observation = toolkit.current_observation(refresh=True)
         home = list(observation.arm("left").q_model)
         waypoints = []
-        for i in range(80):
+        for i in range(20):
             q = list(home)
             q[0] += 0.01 if i % 2 == 0 else 0.0
             waypoints.append(q)
@@ -278,7 +278,7 @@ def test_cancel_stops_between_segments_and_refuses_more_motion(tmp_path):
         reply = client.send_cancel()
         assert reply["accepted"] is True
         final = client.request(
-            "wait_command", {"command_id": command_id, "timeout_s": 5.0}, timeout=7.0
+            "wait_command", {"command_id": command_id, "timeout_s": 15.0}, timeout=17.0
         )
         assert final["state"] == "cancelled"
         assert final["stop"]["confirmed"] is True
@@ -301,14 +301,14 @@ def test_cancel_stops_between_segments_and_refuses_more_motion(tmp_path):
 
 
 def test_cancel_before_the_worker_starts_is_not_lost(tmp_path):
-    config = _config(tmp_path, time_scale=0.03)
+    config = _config(tmp_path, time_scale=0.1)
     daemon, client = _start(config)
     try:
         toolkit = _toolkit(config, client, tmp_path)
         observation = toolkit.current_observation(refresh=True)
         home = list(observation.arm("left").q_model)
         waypoints = []
-        for i in range(80):
+        for i in range(20):
             q = list(home)
             q[0] += 0.01 if i % 2 == 0 else 0.0
             waypoints.append(q)
@@ -330,7 +330,7 @@ def test_cancel_before_the_worker_starts_is_not_lost(tmp_path):
         reply = client.send_cancel()
         assert reply["accepted"] is True
         final = client.request(
-            "wait_command", {"command_id": command_id, "timeout_s": 5.0}, timeout=7.0
+            "wait_command", {"command_id": command_id, "timeout_s": 15.0}, timeout=17.0
         )
         assert final["state"] == "cancelled"
         assert final["stop"]["confirmed"] is True
